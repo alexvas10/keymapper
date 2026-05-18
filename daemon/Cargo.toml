@@ -1,0 +1,16 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+winres = "0.1"
+
+[dependencies]
+shared = { path = "../shared" }
+rdev = { git = "https://github.com/Narsil/rdev", features = ["unstable_grab", "serialize", "x11"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+notify = "6.1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"

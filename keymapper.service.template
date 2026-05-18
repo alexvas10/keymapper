@@ -1,0 +1,11 @@
+[Unit]
+Description=KeyMapper Daemon
+After=network.target
+
+[Service]
+ExecStart=%h/bin/keymapper-d
+Restart=always
+WorkingDirectory=%h/.config/keymapper
+
+[Install]
+WantedBy=default.target
