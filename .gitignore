@@ -1,0 +1,27 @@
+# Rust build output
+target/
+
+# Node / frontend
+gui/node_modules/
+gui/dist/
+
+# Tauri generated files (Android/iOS project scaffolding, JSON schemas)
+gui/src-tauri/gen/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

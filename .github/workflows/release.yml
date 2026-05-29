@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Daemon-only builds  (lightweight, no GUI — just the binary)
+  # -----------------------------------------------------------------------
+  daemon-linux:
+    name: Daemon · Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxtst-dev libevdev-dev libudev-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build daemon
+        run: cargo build --release -p daemon
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/keymapper-daemon dist/
+          cp setup_linux.sh dist/
+          cp keymapper.service.template dist/
+          tar -czf keymapper-daemon-linux-x86_64.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keymapper-daemon-linux-x86_64
+          path: keymapper-daemon-linux-x86_64.tar.gz
+
+  daemon-windows:
+    name: Daemon · Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build daemon
+        run: cargo build --release -p daemon
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item target\release\keymapper-daemon.exe dist\
+          Copy-Item setup_windows.ps1 dist\
+          Compress-Archive -Path dist\* -DestinationPath keymapper-daemon-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keymapper-daemon-windows-x86_64
+          path: keymapper-daemon-windows-x86_64.zip
+
+  # -----------------------------------------------------------------------
+  # Full package builds  (daemon + GUI, produced by the Tauri action)
+  # The Tauri action automatically uploads .AppImage/.deb on Linux and
+  # .msi/.exe on Windows as release assets.
+  # -----------------------------------------------------------------------
+  gui-linux:
+    name: Full package · Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxtst-dev libevdev-dev libudev-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: cd gui && npm ci
+
+      - name: Build with Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          tagName: ${{ github.ref_name }}
+          releaseName: 'KeyMapper ${{ github.ref_name }}'
+          releaseBody: |
+            ## Downloads
+
+            | Package | Platform | Description |
+            |---------|----------|-------------|
+            | `keymapper-daemon-linux-x86_64.tar.gz` | Linux | Daemon only — no GUI, edit `config.yaml` directly |
+            | `keymapper-daemon-windows-x86_64.zip` | Windows | Daemon only — no GUI, edit `config.yaml` directly |
+            | `.AppImage` / `.deb` | Linux | Full package with GUI |
+            | `.msi` / `.exe` | Windows | Full package with GUI installer |
+
+            **Config file location**
+            - Linux: `~/.config/keymapper/config.yaml`
+            - Windows: `%APPDATA%\keymapper\config.yaml`
+
+            Sync this file between machines to share your mappings.
+          releaseDraft: true
+          prerelease: false
+
+  gui-windows:
+    name: Full package · Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: cd gui && npm ci
+
+      - name: Build with Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          tagName: ${{ github.ref_name }}
+          releaseName: 'KeyMapper ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+
+  # -----------------------------------------------------------------------
+  # Attach daemon-only archives to the same draft release
+  # -----------------------------------------------------------------------
+  attach-daemon-artifacts:
+    name: Attach daemon archives to release
+    needs: [daemon-linux, daemon-windows, gui-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: keymapper-daemon-linux-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: keymapper-daemon-windows-x86_64
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            keymapper-daemon-linux-x86_64.tar.gz
+            keymapper-daemon-windows-x86_64.zip
