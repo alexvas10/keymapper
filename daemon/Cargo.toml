@@ -3,14 +3,27 @@ name = "daemon"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "keymapper-daemon"
+path = "src/main.rs"
+
 [build-dependencies]
 winres = "0.1"
 
 [dependencies]
 shared = { path = "../shared" }
-rdev = { git = "https://github.com/Narsil/rdev", features = ["unstable_grab", "serialize", "x11"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9"
 notify = "6.1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+dirs = "5"
+
+# Linux: evdev/uinput — works on X11, Wayland, and raw VTs (kernel-level, no display server dependency)
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = { version = "0.12", features = ["tokio"] }
+
+# Windows: rdev — uses WinAPI low-level keyboard hooks
+[target.'cfg(target_os = "windows")'.dependencies]
+rdev = { git = "https://github.com/Narsil/rdev", features = ["unstable_grab", "serialize"] }
