@@ -19,7 +19,8 @@ interface Config {
   active_profile: string;
   settings: AppSettings;
 }
-interface Profile { name: string; layers: Layer[]; socd_pairs: SocdPair[]; }
+interface Profile { name: string; device?: string | null; layers: Layer[]; socd_pairs: SocdPair[]; }
+interface KbDevice { name: string; id: string; }
 interface Layer { name: string; trigger: string | null; mappings: Mapping[]; }
 interface SocdPair { key1: string; key2: string; mode: SocdMode; }
 type SocdMode = 'last_input_priority' | 'neutral' | 'key1_priority' | 'key2_priority';
@@ -58,6 +59,10 @@ const KEY_DISPLAY: Record<string, string> = {
   BackSlash:'\\', SemiColon:';', Quote:"'", BackQuote:'`',
   Comma:',', Dot:'.', Slash:'/',
   VolumeUp:'Vol+', VolumeDown:'Vol-', VolumeMute:'Mute',
+  PlayPause:'Play', MediaStop:'Stop', MediaNext:'Next', MediaPrevious:'Prev',
+  Menu:'Menu', BrightnessUp:'Brt+', BrightnessDown:'Brt-',
+  Calculator:'Calc', Mail:'Mail', WWWHome:'Web', WWWSearch:'Srch',
+  Eject:'Eject', Sleep:'Sleep',
   KpPlus:'N+', KpMinus:'N-', KpMultiply:'N*',
   KpDivide:'N/', KpReturn:'NEntr', KpDelete:'N.',
   Kp0:'N0', Kp1:'N1', Kp2:'N2', Kp3:'N3', Kp4:'N4',
@@ -76,7 +81,8 @@ const ALL_KEYS: Record<string, string[]> = {
   System: ['PrintScreen','ScrollLock','Pause','NumLock'],
   Numpad: ['Kp0','Kp1','Kp2','Kp3','Kp4','Kp5','Kp6','Kp7','Kp8','Kp9','KpPlus','KpMinus','KpMultiply','KpDivide','KpReturn','KpDelete'],
   Punctuation: ['Minus','Equal','LeftBracket','RightBracket','BackSlash','SemiColon','Quote','BackQuote','Comma','Dot','Slash'],
-  Media: ['VolumeUp','VolumeDown','VolumeMute'],
+  Media: ['VolumeUp','VolumeDown','VolumeMute','PlayPause','MediaStop','MediaNext','MediaPrevious',
+    'Menu','BrightnessUp','BrightnessDown','Calculator','Mail','WWWHome','WWWSearch','Eject','Sleep'],
 };
 
 function dk(key: string) { return KEY_DISPLAY[key] ?? key; }
@@ -203,8 +209,8 @@ const COLEMAK_MAP: Record<string, string> = {
 // Keyboard visual components
 // ---------------------------------------------------------------------------
 
-const UNIT = 38; // px per 1u key
-const GAP  = 3;  // px gap between keys
+const UNIT = 40; // px per 1u key
+const GAP  = 5;  // px gap between keys (keycaps carry drop shadows)
 
 function keyW(w: number) { return w * UNIT + (w - 1) * GAP; }
 
@@ -228,14 +234,12 @@ function KeyCap({ def, mapping, selected, onClick, layerTrigger, isDragOver, onD
   const isLayerMap    = mapping?.type === 'layer';
   const isAnyLayer    = isLayerTrig || isLayerMap;
 
-  let border = 'border-zinc-700';
-  let bg = 'bg-zinc-800 hover:bg-zinc-700';
-  if (isDragOver)        { border = 'border-orange-400'; bg = 'bg-orange-900/40'; }
-  else if (selected)     { border = 'border-orange-400'; bg = 'bg-zinc-700 ring-1 ring-orange-400'; }
-  else if (isAnyLayer)   { border = 'border-violet-500/70'; bg = 'bg-violet-900/30 hover:bg-violet-900/50'; }
-  else if (isModTap)     { border = 'border-blue-500/60'; bg = 'bg-blue-900/30 hover:bg-blue-900/50'; }
-  else if (isSpecial)    { border = 'border-purple-500/60'; bg = 'bg-purple-900/30 hover:bg-purple-900/50'; }
-  else if (isRemap)      { border = 'border-orange-500/50'; bg = 'bg-orange-900/25 hover:bg-orange-900/40'; }
+  let variant = '';
+  if (isDragOver)        variant = 'keycap-dragover';
+  else if (isAnyLayer)   variant = 'keycap-layer';
+  else if (isModTap)     variant = 'keycap-modtap';
+  else if (isSpecial)    variant = 'keycap-special';
+  else if (isRemap)      variant = 'keycap-remap';
 
   let sub = '';
   if (isLayerTrig)                        sub = `⇕ ${layerTrigger}`;
@@ -253,15 +257,15 @@ function KeyCap({ def, mapping, selected, onClick, layerTrigger, isDragOver, onD
       onDragLeave={() => onDragOverKey?.(null)}
       onDrop={e => { e.preventDefault(); const tk = e.dataTransfer.getData('targetKey'); if (tk) onDropKey?.(def.id, tk); onDragOverKey?.(null); }}
       style={{ width: keyW(w), height: UNIT, flexShrink: 0 }}
-      className={`border rounded cursor-pointer flex flex-col items-center justify-center transition-colors select-none ${bg} ${border}`}
+      className={`keycap ${variant} ${selected ? 'keycap-selected' : ''} flex flex-col items-center justify-center select-none`}
     >
-      <span className="text-[10px] font-medium text-zinc-200 leading-tight">{def.label}</span>
+      <span className="text-[10px] font-semibold text-zinc-200 leading-tight tracking-tight">{def.label}</span>
       {def.sub && !mapping && !isAnyLayer && (
         <span className="text-[8px] text-zinc-500 leading-none">{def.sub}</span>
       )}
       {sub && (
-        <span className={`text-[8px] leading-none mt-px font-medium truncate max-w-full px-0.5 ${
-          isAnyLayer ? 'text-violet-400' : isModTap ? 'text-blue-400' : isSpecial ? 'text-purple-400' : 'text-orange-400'
+        <span className={`text-[8px] leading-none mt-px font-semibold truncate max-w-full px-0.5 ${
+          isAnyLayer ? 'text-violet-300' : isModTap ? 'text-sky-300' : isSpecial ? 'text-purple-300' : 'text-orange-300'
         }`}>{sub}</span>
       )}
     </div>
@@ -432,37 +436,37 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
     <div className="p-5 space-y-4">
       {/* Controls bar */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className={`flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 gap-0.5 transition-opacity ${overrideDisplay ? '' : 'opacity-40'}`}>
+        <div className={`flex items-center bg-white/[0.04] border border-white/[0.07] rounded-lg p-0.5 gap-0.5 transition-opacity ${overrideDisplay ? '' : 'opacity-40'}`}>
           {KB_SIZES.map(s => (
             <button key={s.value} onClick={() => overrideDisplay && setLocalSize(s.value as KbSize)}
-              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${kbSize === s.value ? 'bg-orange-600 text-white' : overrideDisplay ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 cursor-default'}`}>
+              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${kbSize === s.value ? 'btn-primary text-white' : overrideDisplay ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 cursor-default'}`}>
               {s.label}
             </button>
           ))}
         </div>
-        <div className={`flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 gap-0.5 transition-opacity ${overrideDisplay ? '' : 'opacity-40'}`}>
+        <div className={`flex items-center bg-white/[0.04] border border-white/[0.07] rounded-lg p-0.5 gap-0.5 transition-opacity ${overrideDisplay ? '' : 'opacity-40'}`}>
           {(['ansi','iso'] as const).map(s => (
             <button key={s} onClick={() => overrideDisplay && setLocalStyle(s)}
-              className={`px-3 py-1 rounded text-sm font-medium uppercase transition-colors ${kbStyle === s ? 'bg-orange-600 text-white' : overrideDisplay ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 cursor-default'}`}>
+              className={`px-3 py-1 rounded-md text-sm font-medium uppercase transition-colors ${kbStyle === s ? 'btn-primary text-white' : overrideDisplay ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 cursor-default'}`}>
               {s}
             </button>
           ))}
         </div>
         <button onClick={handleOverrideToggle}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${overrideDisplay ? 'bg-zinc-700 border-zinc-600 text-zinc-200' : 'bg-transparent border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'}`}>
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${overrideDisplay ? 'bg-white/[0.08] border-white/20 text-zinc-200' : 'bg-transparent border-white/[0.07] text-zinc-500 hover:border-white/20 hover:text-zinc-400'}`}>
           <Settings size={12} />
           {overrideDisplay ? 'Using custom display' : 'Override display'}
         </button>
         <div className="flex items-center gap-2 ml-2">
-          <span className="text-xs text-zinc-500">Presets:</span>
+          <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Presets</span>
           <button onClick={() => setShowResetConfirm(true)}
-            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">QWERTY</button>
+            className="px-3 py-1.5 text-sm font-medium bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] hover:border-white/20 rounded-lg transition-colors">QWERTY</button>
           <button onClick={() => { onPreset(DVORAK_MAP); setSelected(null); }}
-            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">Dvorak</button>
+            className="px-3 py-1.5 text-sm font-medium bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] hover:border-white/20 rounded-lg transition-colors">Dvorak</button>
           <button onClick={() => { onPreset(COLEMAK_MAP); setSelected(null); }}
-            className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">Colemak</button>
+            className="px-3 py-1.5 text-sm font-medium bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] hover:border-white/20 rounded-lg transition-colors">Colemak</button>
           <button onClick={() => { onClearLayout(); setSelected(null); }}
-            className="px-3 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 border border-zinc-800 rounded-lg transition-colors">Clear layout</button>
+            className="px-3 py-1.5 text-sm text-zinc-500 hover:text-zinc-300 border border-white/[0.07] hover:border-white/15 rounded-lg transition-colors">Clear layout</button>
         </div>
       </div>
 
@@ -471,7 +475,7 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
         {/* Left: keyboard */}
         <div className="flex-1 min-w-0 space-y-3">
           <div className="overflow-x-auto pb-1">
-            <div className="inline-block">
+            <div className="inline-block kb-plate p-5">
               <KeyboardVisual size={kbSize} style={kbStyle} mappings={mappings} selected={selected} onClick={handleClick}
                 layerTriggers={layerTriggers} dragOverKey={dragOverKey}
                 onDropKey={handleKeyDrop} onDragOverKey={setDragOverKey} />
@@ -480,18 +484,18 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
 
           {/* Legend */}
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-orange-500/50 bg-orange-900/25 inline-block"/> Remapped</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-blue-500/60 bg-blue-900/30 inline-block"/> Mod-tap</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-purple-500/60 bg-purple-900/30 inline-block"/> Special</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-violet-500/70 bg-violet-900/30 inline-block"/> Layer trigger</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-orange-500/60 bg-orange-500/15 inline-block"/> Remapped</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-sky-500/60 bg-sky-500/15 inline-block"/> Mod-tap</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-purple-500/60 bg-purple-500/15 inline-block"/> Special</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded border border-violet-500/70 bg-violet-500/15 inline-block"/> Layer trigger</span>
             <span className="ml-auto text-zinc-600">Click to edit · Drag from pool to remap</span>
           </div>
 
           {selected && (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+            <div className="panel rounded-2xl p-4 flex items-center justify-between animate-pop-in">
               <div>
                 <span className="text-sm text-zinc-400">Selected: </span>
-                <span className="font-mono font-medium text-orange-400">{dk(selected)}</span>
+                <span className="font-mono font-semibold text-orange-400">{dk(selected)}</span>
                 {layerTriggers[selected] && (
                   <span className="ml-3 text-xs text-violet-400">⇕ triggers layer "{layerTriggers[selected]}"</span>
                 )}
@@ -502,13 +506,13 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
               <div className="flex gap-2">
                 {!layerTriggers[selected] && (
                   <button onClick={() => onMappingEdit(selected)}
-                    className="px-3 py-1.5 text-sm bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors">
+                    className="btn-primary px-3.5 py-1.5 text-sm font-medium rounded-lg text-white">
                     {selectedMapping ? 'Edit mapping' : 'Add mapping'}
                   </button>
                 )}
                 {selectedMapping && (
                   <button onClick={() => { onPreset({ [selected]: '__clear__' }); setSelected(null); }}
-                    className="px-3 py-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-zinc-400 transition-colors">Clear</button>
+                    className="px-3.5 py-1.5 text-sm bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] rounded-lg text-zinc-400 transition-colors">Clear</button>
                 )}
               </div>
             </div>
@@ -516,28 +520,28 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
         </div>
 
         {/* Right: key pool */}
-        <div className="w-64 shrink-0 bg-zinc-900 border border-zinc-800 rounded-xl flex flex-col" style={{ maxHeight: 560 }}>
-          <div className="px-3 pt-3 pb-2 border-b border-zinc-800 shrink-0">
-            <p className="text-xs font-semibold text-zinc-400 mb-2">Key Pool</p>
+        <div className="w-64 shrink-0 panel rounded-2xl flex flex-col" style={{ maxHeight: 560 }}>
+          <div className="px-3 pt-3 pb-2 border-b border-white/[0.06] shrink-0">
+            <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">Key Pool</p>
             <input value={poolSearch} onChange={e => setPoolSearch(e.target.value)}
               placeholder="Search keys…"
-              className="w-full bg-zinc-800 rounded-md px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-orange-500" />
+              className="w-full bg-black/30 border border-white/[0.07] rounded-lg px-2.5 py-1.5 text-xs outline-none focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/40 transition-colors placeholder:text-zinc-600" />
           </div>
           {!poolSearch && (
-            <div className="flex gap-1 p-2 border-b border-zinc-800 flex-wrap shrink-0">
+            <div className="flex gap-1 p-2 border-b border-white/[0.06] flex-wrap shrink-0">
               {[...Object.keys(ALL_KEYS), 'Layers'].map(c => (
                 <button key={c} onClick={() => setPoolCat(c)}
-                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors ${
                     poolCat === c
-                      ? c === 'Layers' ? 'bg-violet-600 text-white' : 'bg-orange-600 text-white'
-                      : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                      ? c === 'Layers' ? 'bg-violet-600 text-white shadow-[0_0_10px_rgba(139,92,246,0.4)]' : 'btn-primary text-white'
+                      : 'bg-white/[0.05] text-zinc-400 hover:bg-white/[0.1] hover:text-zinc-200'
                   }`}>
                   {c}
                 </button>
               ))}
             </div>
           )}
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="flex-1 overflow-y-auto p-2.5">
             <div className="flex flex-wrap gap-1.5">
               {poolCat === 'Layers' && !poolSearch ? (
                 availableLayerNames.length === 0 ? (
@@ -548,7 +552,7 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
                       draggable
                       onDragStart={e => e.dataTransfer.setData('targetKey', `__layer:${name}`)}
                       title={`Drag onto a key to activate layer "${name}" when held`}
-                      className="px-2 py-1 rounded border border-violet-700 bg-violet-900/30 hover:border-violet-500 hover:bg-violet-900/50 text-xs font-mono text-violet-300 cursor-grab active:cursor-grabbing transition-colors select-none">
+                      className="pool-chip !border-violet-500/40 !bg-none !bg-violet-500/10 hover:!border-violet-400 px-2 py-1 text-xs font-mono text-violet-300 cursor-grab active:cursor-grabbing select-none">
                       ⇕ {name}
                     </div>
                   ))
@@ -560,7 +564,7 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
                       draggable
                       onDragStart={e => e.dataTransfer.setData('targetKey', k)}
                       title={`Drag onto a key to remap it → ${dk(k)}`}
-                      className="px-2 py-1 rounded border border-zinc-700 bg-zinc-800 hover:border-orange-500 hover:bg-zinc-700 text-xs font-mono text-zinc-300 cursor-grab active:cursor-grabbing transition-colors select-none">
+                      className="pool-chip px-2 py-1 text-xs font-mono text-zinc-300 cursor-grab active:cursor-grabbing select-none">
                       {dk(k)}
                     </div>
                   ))}
@@ -573,9 +577,9 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
       </div>
 
       {showResetConfirm && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setShowResetConfirm(false)}>
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[400px] shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={() => setShowResetConfirm(false)}>
+          <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[400px] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
               <h3 className="font-semibold">Reset all mappings?</h3>
               <button onClick={() => setShowResetConfirm(false)}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
             </div>
@@ -585,7 +589,7 @@ function LayoutView({ profile, layerIdx, settings, savedToken, onMappingEdit, on
               </p>
               <p className="text-xs text-zinc-500 mt-2">This cannot be undone.</p>
             </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-zinc-800">
+            <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
               <button onClick={() => setShowResetConfirm(false)}
                 className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
               <button onClick={() => { onResetProfile(); setSelected(null); setShowResetConfirm(false); }}
@@ -609,21 +613,21 @@ function KeyPickerModal({ value, onChange, onClose }: { value: string; onChange:
     ? Object.values(ALL_KEYS).flat().filter(k => k.toLowerCase().includes(search.toLowerCase()) || (KEY_DISPLAY[k]??'').toLowerCase().includes(search.toLowerCase()))
     : ALL_KEYS[cat] ?? [];
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[520px] max-h-[80vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[520px] max-h-[80vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
           <h3 className="font-semibold">Pick a key</h3>
           <button onClick={onClose}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
         </div>
-        <div className="p-3 border-b border-zinc-800">
-          <input autoFocus className="w-full bg-zinc-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-orange-500"
+        <div className="p-3 border-b border-white/[0.06]">
+          <input autoFocus className="w-full bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2 text-sm outline-none focus:border-orange-500/60 focus:ring-1 focus:ring-orange-500/40 placeholder:text-zinc-600 transition-colors"
             placeholder="Search keys…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         {!search && (
-          <div className="flex gap-1 p-2 border-b border-zinc-800 flex-wrap">
+          <div className="flex gap-1 p-2 border-b border-white/[0.06] flex-wrap">
             {Object.keys(ALL_KEYS).map(c => (
               <button key={c} onClick={() => setCat(c)}
-                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${cat === c ? 'bg-orange-600 text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>{c}</button>
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${cat === c ? 'btn-primary text-white' : 'bg-white/[0.05] text-zinc-300 hover:bg-white/[0.1]'}`}>{c}</button>
             ))}
           </div>
         )}
@@ -631,7 +635,7 @@ function KeyPickerModal({ value, onChange, onClose }: { value: string; onChange:
           <div className="flex flex-wrap gap-1.5">
             {filtered.map(k => (
               <button key={k} onClick={() => { onChange(k); onClose(); }}
-                className={`px-2.5 py-1.5 rounded-md text-sm font-mono transition-colors border ${value === k ? 'bg-orange-600 border-orange-500 text-white' : 'bg-zinc-800 border-zinc-700 hover:border-orange-500 text-zinc-200'}`}>
+                className={`px-2.5 py-1.5 rounded-md text-sm font-mono transition-colors border ${value === k ? 'btn-primary text-white border-transparent' : 'bg-white/[0.05] border-white/[0.08] hover:border-orange-500/60 text-zinc-200'}`}>
                 {dk(k)}
               </button>
             ))}
@@ -648,7 +652,7 @@ function KeyButton({ value, onPick, placeholder = 'Pick key' }: { value: string;
   return (
     <>
       <button onClick={() => setOpen(true)}
-        className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-orange-500 rounded-md text-sm font-mono transition-colors">
+        className="pool-chip px-2.5 py-1 text-sm font-mono text-zinc-200">
         {value ? dk(value) : <span className="text-zinc-500">{placeholder}</span>}
       </button>
       {open && <KeyPickerModal value={value} onChange={onPick} onClose={() => setOpen(false)} />}
@@ -690,9 +694,9 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[480px] max-h-[90vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[480px] max-h-[90vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
           <h3 className="font-semibold">{initial ? 'Edit Mapping' : 'Add Mapping'}</h3>
           <button onClick={onClose}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
         </div>
@@ -706,7 +710,7 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
             <div className="flex flex-wrap gap-1.5">
               {(['key','mod_tap','toggle','command','macro','layer'] as Target['type'][]).map(t => (
                 <button key={t} onClick={() => setToType(t)}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${toType === t ? (t === 'layer' ? 'bg-violet-600 text-white' : 'bg-orange-600 text-white') : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}>
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${toType === t ? (t === 'layer' ? 'bg-violet-600 text-white shadow-[0_0_12px_rgba(139,92,246,0.4)]' : 'btn-primary text-white') : 'bg-white/[0.05] text-zinc-300 hover:bg-white/[0.1]'}`}>
                   {BEHAVIOR_LABELS[t]}
                 </button>
               ))}
@@ -725,7 +729,7 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
               <div><label className="block text-xs font-semibold text-zinc-400 mb-1.5">Hold threshold (ms)</label>
                 <input type="number" min={50} max={1000} step={10} value={holdMs}
                   onChange={e => setHoldMs(Number(e.target.value))}
-                  className="w-24 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm outline-none focus:border-orange-500" />
+                  className="w-24 bg-black/30 border border-white/[0.08] rounded-lg px-3 py-1.5 text-sm outline-none focus:border-orange-500" />
               </div>
             </div>
           )}
@@ -740,7 +744,7 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
             <div>
               <label className="block text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wider">Shell command</label>
               <input type="text" value={cmd} onChange={e => setCmd(e.target.value)}
-                placeholder="e.g. firefox" className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm outline-none focus:border-orange-500 font-mono" />
+                placeholder="e.g. firefox" className="w-full bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2 text-sm outline-none focus:border-orange-500 font-mono" />
             </div>
           )}
           {toType === 'macro' && (
@@ -748,10 +752,10 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
               <label className="block text-xs font-semibold text-zinc-400 mb-2 uppercase tracking-wider">Steps</label>
               <div className="space-y-2">
                 {steps.map((step, i) => (
-                  <div key={i} className="flex items-center gap-2 bg-zinc-800 rounded-lg p-2">
+                  <div key={i} className="flex items-center gap-2 bg-white/[0.04] border border-white/[0.06] rounded-lg p-2">
                     <select value={step.action.type}
                       onChange={e => setSteps(s => s.map((st, idx) => idx === i ? { ...st, action: { type: e.target.value as MacroAction['type'], key: (st.action as any).key ?? '' } } : st))}
-                      className="bg-zinc-700 rounded px-2 py-1 text-sm outline-none">
+                      className="bg-black/40 border border-white/10 rounded-md px-2 py-1 text-sm outline-none focus:border-orange-500/60">
                       <option value="tap">Tap</option>
                       <option value="press">Press</option>
                       <option value="release">Release</option>
@@ -759,7 +763,7 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
                     <KeyButton value={(step.action as any).key ?? ''} onPick={k => setSteps(s => s.map((st, idx) => idx === i ? { ...st, action: { ...st.action, key: k } } : st))} />
                     <input type="number" min={0} max={5000} placeholder="ms" value={step.delay_ms ?? ''}
                       onChange={e => setSteps(s => s.map((st, idx) => idx === i ? { ...st, delay_ms: e.target.value ? Number(e.target.value) : null } : st))}
-                      className="w-16 bg-zinc-700 rounded px-2 py-1 text-xs outline-none" />
+                      className="w-16 bg-black/40 border border-white/10 rounded-md px-2 py-1 text-xs outline-none focus:border-orange-500/60" />
                     <button onClick={() => setSteps(s => s.filter((_, idx) => idx !== i))} className="text-zinc-500 hover:text-red-400 ml-auto"><X size={14} /></button>
                   </div>
                 ))}
@@ -778,7 +782,7 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
                 <div className="flex flex-wrap gap-1.5">
                   {availableLayers.map(n => (
                     <button key={n} onClick={() => setLayerName(n)}
-                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${layerName === n ? 'bg-violet-600 border-violet-500 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-violet-500'}`}>
+                      className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors border ${layerName === n ? 'bg-violet-600 border-violet-500 text-white shadow-[0_0_12px_rgba(139,92,246,0.4)]' : 'bg-white/[0.05] border-white/[0.08] text-zinc-300 hover:border-violet-500/70'}`}>
                       {n}
                     </button>
                   ))}
@@ -787,10 +791,10 @@ function MappingModal({ initial, prefillFrom, onSave, onClose, availableLayers =
             </div>
           )}
         </div>
-        <div className="flex justify-end gap-2 p-4 border-t border-zinc-800">
+        <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
           <button onClick={() => { if (from && (toType !== 'layer' || layerName)) { onSave({ from, to: buildTarget() }); onClose(); } }}
-            disabled={!from || (toType === 'layer' && !layerName)} className="px-4 py-2 rounded-lg text-sm font-medium bg-orange-600 hover:bg-orange-700 disabled:opacity-40 transition-colors">Save</button>
+            disabled={!from || (toType === 'layer' && !layerName)} className="px-4 py-2 rounded-lg text-sm font-medium btn-primary text-white disabled:opacity-40 transition-colors">Save</button>
         </div>
       </div>
     </div>
@@ -813,9 +817,9 @@ function SocdModal({ initial, onSave, onClose }: { initial: SocdPair | null; onS
   const [key2, setKey2] = useState(initial?.key2 ?? '');
   const [mode, setMode] = useState<SocdMode>(initial?.mode ?? 'last_input_priority');
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[420px] shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[420px] shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
           <h3 className="font-semibold">{initial ? 'Edit SOCD Pair' : 'Add SOCD Pair'}</h3>
           <button onClick={onClose}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
         </div>
@@ -829,7 +833,7 @@ function SocdModal({ initial, onSave, onClose }: { initial: SocdPair | null; onS
             <label className="block text-xs font-semibold text-zinc-400 mb-2">Resolution mode</label>
             <div className="space-y-2">
               {SOCD_MODES.map(m => (
-                <label key={m.value} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === m.value ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                <label key={m.value} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${mode === m.value ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}>
                   <input type="radio" name="mode" value={m.value} checked={mode === m.value} onChange={() => setMode(m.value)} className="mt-0.5" />
                   <div><p className="text-sm font-medium">{m.label}</p><p className="text-xs text-zinc-400 mt-0.5">{m.desc}</p></div>
                 </label>
@@ -837,10 +841,10 @@ function SocdModal({ initial, onSave, onClose }: { initial: SocdPair | null; onS
             </div>
           </div>
         </div>
-        <div className="flex justify-end gap-2 p-4 border-t border-zinc-800">
+        <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
           <button onClick={() => { if (key1 && key2) { onSave({ key1, key2, mode }); onClose(); } }}
-            disabled={!key1 || !key2} className="px-4 py-2 rounded-lg text-sm font-medium bg-orange-600 hover:bg-orange-700 disabled:opacity-40 transition-colors">Save</button>
+            disabled={!key1 || !key2} className="px-4 py-2 rounded-lg text-sm font-medium btn-primary text-white disabled:opacity-40 transition-colors">Save</button>
         </div>
       </div>
     </div>
@@ -855,9 +859,9 @@ function LayerModal({ initial, onSave, onClose }: { initial: Layer | null; onSav
   const [name, setName] = useState(initial?.name ?? '');
   const [trigger, setTrigger] = useState(initial?.trigger ?? '');
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[360px] shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={onClose}>
+      <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[360px] shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
           <h3 className="font-semibold">{initial ? 'Edit Layer' : 'Add Layer'}</h3>
           <button onClick={onClose}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
         </div>
@@ -865,7 +869,7 @@ function LayerModal({ initial, onSave, onClose }: { initial: Layer | null; onSav
           <div>
             <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Layer name</label>
             <input autoFocus type="text" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. fn, gaming"
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm outline-none focus:border-orange-500" />
+              className="w-full bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2 text-sm outline-none focus:border-orange-500" />
           </div>
           <div>
             <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Trigger key (optional)</label>
@@ -876,10 +880,10 @@ function LayerModal({ initial, onSave, onClose }: { initial: Layer | null; onSav
             </div>
           </div>
         </div>
-        <div className="flex justify-end gap-2 p-4 border-t border-zinc-800">
+        <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
           <button onClick={() => { if (name) { onSave(name, trigger || null); onClose(); } }}
-            disabled={!name} className="px-4 py-2 rounded-lg text-sm font-medium bg-orange-600 hover:bg-orange-700 disabled:opacity-40 transition-colors">Save</button>
+            disabled={!name} className="px-4 py-2 rounded-lg text-sm font-medium btn-primary text-white disabled:opacity-40 transition-colors">Save</button>
         </div>
       </div>
     </div>
@@ -910,7 +914,7 @@ function WizKey({ def, u, g, hl, lbl, ghost }: {
   if (def.id.startsWith('__sp') || ghost) return <div style={{ width: wkw(w, u, g), height: u, flexShrink: 0 }} />;
   return (
     <div style={{ width: wkw(w, u, g), height: u, flexShrink: 0 }}
-      className={`border rounded-[2px] flex items-center justify-center ${hl ? 'border-orange-400 bg-orange-600/25' : 'border-zinc-600 bg-zinc-800'}`}>
+      className={`border rounded-[2px] flex items-center justify-center ${hl ? 'border-orange-400 bg-orange-500/25' : 'border-white/15 bg-zinc-800'}`}>
       {lbl && <span className="text-[7px] leading-none font-medium text-zinc-300 truncate px-px">{lbl}</span>}
     </div>
   );
@@ -1066,22 +1070,24 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
 
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center">
-      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl w-[520px] max-h-[90vh] shadow-2xl flex flex-col">
+      <div className="bg-[#141418] border border-white/10 rounded-2xl w-[520px] max-h-[90vh] shadow-2xl flex flex-col animate-pop-in overflow-hidden">
         {/* Header */}
-        <div className="p-6 border-b border-zinc-800">
+        <div className="p-6 border-b border-white/[0.06]">
           <div className="flex items-center gap-3 mb-4">
-            <Keyboard className="text-orange-500" size={24} />
-            <h2 className="text-xl font-bold">Welcome to KeyMapper</h2>
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shadow-[0_0_20px_rgba(249,115,22,0.4),inset_0_1px_0_rgba(255,255,255,0.3)]">
+              <Keyboard className="text-white" size={21} />
+            </div>
+            <h2 className="text-xl font-bold tracking-tight">Welcome to KeyMapper</h2>
           </div>
           {/* Step indicators */}
           <div className="flex items-center gap-2">
             {STEPS.map((s, i) => (
               <div key={s} className="flex items-center gap-2">
-                <div className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold transition-colors ${i < step ? 'bg-orange-600 text-white' : i === step ? 'bg-orange-500 text-white' : 'bg-zinc-700 text-zinc-400'}`}>
+                <div className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold transition-colors ${i < step ? 'btn-primary text-white' : i === step ? 'btn-primary text-white' : 'bg-white/[0.07] text-zinc-500'}`}>
                   {i < step ? '✓' : i + 1}
                 </div>
                 <span className={`text-xs font-medium ${i === step ? 'text-zinc-200' : 'text-zinc-500'}`}>{s}</span>
-                {i < STEPS.length - 1 && <div className={`w-6 h-px ${i < step ? 'bg-orange-600' : 'bg-zinc-700'}`} />}
+                {i < STEPS.length - 1 && <div className={`w-6 h-px ${i < step ? 'bg-orange-500' : 'bg-white/10'}`} />}
               </div>
             ))}
           </div>
@@ -1095,7 +1101,7 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
               <div className="space-y-2">
                 {WIZARD_STYLES.map(o => (
                   <label key={o.value} onClick={() => setStyle(o.value)}
-                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${style === o.value ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${style === o.value ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}>
                     <div className="flex items-center gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${style === o.value ? 'border-orange-500' : 'border-zinc-600'}`}>
                         {style === o.value && <div className="w-2 h-2 rounded-full bg-orange-500" />}
@@ -1124,7 +1130,7 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
               <div className="space-y-2">
                 {WIZARD_LAYOUTS.map(o => (
                   <label key={o.value} onClick={() => setLayout(o.value)}
-                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${layout === o.value ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${layout === o.value ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}>
                     <div className="flex items-center gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${layout === o.value ? 'border-orange-500' : 'border-zinc-600'}`}>
                         {layout === o.value && <div className="w-2 h-2 rounded-full bg-orange-500" />}
@@ -1153,7 +1159,7 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
               <div className="space-y-2">
                 {WIZARD_SIZES.map(o => (
                   <label key={o.value} onClick={() => setSize(o.value)}
-                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${size === o.value ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                    className={`flex flex-col gap-2 p-3 rounded-xl border cursor-pointer transition-colors ${size === o.value ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}>
                     <div className="flex items-center gap-3">
                       <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${size === o.value ? 'border-orange-500' : 'border-zinc-600'}`}>
                         {size === o.value && <div className="w-2 h-2 rounded-full bg-orange-500" />}
@@ -1180,7 +1186,7 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
           {step === 3 && (
             <div className="space-y-3">
               <p className="text-sm text-zinc-400 mb-4">Should KeyMapper start automatically when you log in?</p>
-              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${daemonAuto ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${daemonAuto ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}
                 onClick={() => setDaemonAuto(a => !a)}>
                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 shrink-0 ${daemonAuto ? 'border-orange-500 bg-orange-500' : 'border-zinc-600'}`}>
                   {daemonAuto && <span className="text-white text-xs font-bold">✓</span>}
@@ -1190,7 +1196,7 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
                   <p className="text-xs text-zinc-400 mt-0.5">Keeps your remappings active even when the KeyMapper window is closed.</p>
                 </div>
               </label>
-              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${guiAuto ? 'border-orange-500 bg-orange-600/10' : 'border-zinc-700 hover:border-zinc-600'}`}
+              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${guiAuto ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}
                 onClick={() => setGuiAuto(a => !a)}>
                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 shrink-0 ${guiAuto ? 'border-orange-500 bg-orange-500' : 'border-zinc-600'}`}>
                   {guiAuto && <span className="text-white text-xs font-bold">✓</span>}
@@ -1205,19 +1211,19 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex justify-between items-center p-6 border-t border-zinc-800">
+        <div className="flex justify-between items-center p-6 border-t border-white/[0.06]">
           <button onClick={() => setStep(s => s - 1)} disabled={step === 0}
             className="flex items-center gap-1 px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 disabled:opacity-0 transition-all">
             <ChevronLeft size={16} /> Back
           </button>
           {isLast ? (
             <button onClick={finish} disabled={applying}
-              className="flex items-center gap-1.5 px-6 py-2 rounded-lg text-sm font-semibold bg-orange-600 hover:bg-orange-700 disabled:opacity-50 transition-colors">
+              className="flex items-center gap-1.5 px-6 py-2 rounded-lg text-sm font-semibold btn-primary text-white disabled:opacity-50 transition-colors">
               {applying ? 'Applying…' : 'Get started'} {!applying && <ChevronRight size={16} />}
             </button>
           ) : (
             <button onClick={() => setStep(s => s + 1)}
-              className="flex items-center gap-1.5 px-6 py-2 rounded-lg text-sm font-semibold bg-orange-600 hover:bg-orange-700 transition-colors">
+              className="flex items-center gap-1.5 px-6 py-2 rounded-lg text-sm font-semibold btn-primary text-white transition-colors">
               Next <ChevronRight size={16} />
             </button>
           )}
@@ -1260,13 +1266,13 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
 
   function ToggleRow({ label, desc, value, onChange, disabled }: { label: string; desc: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
     return (
-      <label className={`flex items-start justify-between gap-4 p-3 rounded-xl border transition-colors cursor-pointer ${value ? 'border-orange-500/50 bg-orange-600/5' : 'border-zinc-800 hover:border-zinc-700'} ${disabled ? 'opacity-40 pointer-events-none' : ''}`}
+      <label className={`flex items-start justify-between gap-4 p-3 rounded-xl border transition-colors cursor-pointer ${value ? 'border-orange-500/50 bg-orange-500/[0.06]' : 'border-white/[0.07] hover:border-white/15'} ${disabled ? 'opacity-40 pointer-events-none' : ''}`}
         onClick={() => onChange(!value)}>
         <div>
           <p className="text-sm font-medium">{label}</p>
           <p className="text-xs text-zinc-500 mt-0.5">{desc}</p>
         </div>
-        <div className={`relative w-10 h-5 rounded-full transition-colors shrink-0 mt-0.5 ${value ? 'bg-orange-500' : 'bg-zinc-700'}`}>
+        <div className={`relative w-10 h-5 rounded-full transition-colors shrink-0 mt-0.5 ${value ? 'bg-gradient-to-b from-orange-400 to-orange-600 shadow-[0_0_10px_rgba(249,115,22,0.4)]' : 'bg-white/10'}`}>
           <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${value ? 'left-5' : 'left-0.5'}`} />
         </div>
       </label>
@@ -1279,10 +1285,10 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
 
   function OptionGroup({ value, options, onChange }: { value: string; options: { value: string; label: string }[]; onChange: (v: string) => void }) {
     return (
-      <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5 gap-0.5 flex-wrap">
+      <div className="flex items-center bg-black/30 border border-white/[0.08] rounded-lg p-0.5 gap-0.5 flex-wrap">
         {options.map(o => (
           <button key={o.value} onClick={() => onChange(o.value)}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${value === o.value ? 'bg-orange-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${value === o.value ? 'btn-primary text-white' : 'text-zinc-400 hover:text-zinc-200'}`}>
             {o.label}
           </button>
         ))}
@@ -1291,9 +1297,9 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-end" onClick={onClose}>
-      <div className="bg-zinc-900 border-l border-zinc-700 h-full w-[380px] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-5 border-b border-zinc-800 shrink-0">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-end animate-fade-in" onClick={onClose}>
+      <div className="bg-zinc-950/85 backdrop-blur-2xl border-l border-white/10 h-full w-[380px] flex flex-col shadow-2xl animate-slide-in-right" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-white/[0.06] shrink-0">
           <div className="flex items-center gap-2">
             <Settings size={18} className="text-orange-500" />
             <h2 className="font-semibold">Settings</h2>
@@ -1313,7 +1319,7 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
             />
           </div>
 
-          <div className="border-t border-zinc-800" />
+          <div className="border-t border-white/[0.06]" />
 
           {/* Keyboard defaults */}
           <div>
@@ -1341,7 +1347,7 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
             </div>
           </div>
 
-          <div className="border-t border-zinc-800" />
+          <div className="border-t border-white/[0.06]" />
 
           {/* Startup */}
           <div>
@@ -1364,7 +1370,7 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
             </div>
           </div>
 
-          <div className="border-t border-zinc-800" />
+          <div className="border-t border-white/[0.06]" />
 
           {/* Re-run wizard */}
           <div>
@@ -1391,9 +1397,12 @@ function StatusDot({ status }: { status: DaemonStatus }) {
   const labels: Record<DaemonStatus, string> = {
     active:'Running', inactive:'Stopped', 'not-installed':'Not installed', loading:'Checking…', unknown:'Unknown',
   };
+  const glow: Record<DaemonStatus, string> = {
+    active:'shadow-[0_0_8px_rgba(34,197,94,0.9)]', inactive:'', 'not-installed':'shadow-[0_0_8px_rgba(239,68,68,0.8)]', loading:'', unknown:'',
+  };
   return (
-    <div className="flex items-center gap-1.5 text-sm text-zinc-400">
-      <span className={`w-2 h-2 rounded-full ${colors[status]}`} />
+    <div className="flex items-center gap-2 text-xs font-medium text-zinc-400 bg-white/[0.04] border border-white/[0.07] rounded-full px-3 py-1.5">
+      <span className={`w-2 h-2 rounded-full ${colors[status]} ${glow[status]}`} />
       {labels[status]}
     </div>
   );
@@ -1404,7 +1413,7 @@ function StatusDot({ status }: { status: DaemonStatus }) {
 // ---------------------------------------------------------------------------
 
 function defaultProfile(name: string): Profile {
-  return { name, layers: [{ name: 'base', trigger: null, mappings: [] }], socd_pairs: [] };
+  return { name, device: null, layers: [{ name: 'base', trigger: null, mappings: [] }], socd_pairs: [] };
 }
 
 // Keys that are part of a layout preset (affected by Dvorak/Colemak/Clear)
@@ -1448,6 +1457,11 @@ export default function App() {
   const [layerModal, setLayerModal]     = useState<{ layer: Layer | null; idx: number | null } | null>(null);
   const [addingProfile, setAddingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
+  const [devices, setDevices] = useState<KbDevice[]>([]);
+
+  useEffect(() => {
+    invoke<KbDevice[]>('list_keyboards').then(setDevices).catch(() => setDevices([]));
+  }, []);
 
   const checkDaemon = useCallback(async () => {
     const [installed, status] = await Promise.all([invoke<boolean>('is_daemon_installed'), invoke<string>('get_daemon_status')]);
@@ -1622,6 +1636,12 @@ export default function App() {
   }
   function deleteSocd(i: number) { mutate(c => c.profiles[profileIdx].socd_pairs.splice(i, 1)); }
 
+  // Per-device profile assignment (Linux). Matcher is "vendor:product" or a
+  // device-name substring; empty = profile follows the global active switch.
+  function setProfileDevice(v: string) {
+    mutate(c => { c.profiles[profileIdx].device = v || null; });
+  }
+
   // Layout view operations
   function applyPreset(map: Record<string, string>) {
     mutate(c => {
@@ -1664,22 +1684,24 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100 font-sans select-none">
+    <div className="app-bg flex h-screen flex-col text-zinc-100 font-sans select-none">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-zinc-800 px-5 py-2.5 shrink-0">
+      <header className="flex items-center justify-between border-b border-white/[0.06] bg-zinc-950/50 backdrop-blur-xl px-5 py-2.5 shrink-0">
         <div className="flex items-center gap-3">
-          <Keyboard className="text-orange-500" size={20} />
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shadow-[0_0_16px_rgba(249,115,22,0.35),inset_0_1px_0_rgba(255,255,255,0.3)]">
+            <Keyboard className="text-white" size={17} />
+          </div>
           <h1 className="text-lg font-bold tracking-tight">KeyMapper</h1>
         </div>
         <div className="flex items-center gap-3">
           {/* View toggle */}
-          <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 gap-0.5">
+          <div className="flex items-center bg-white/[0.04] border border-white/[0.07] rounded-lg p-0.5 gap-0.5">
             <button onClick={() => setView('mappings')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded text-sm font-medium transition-colors ${view === 'mappings' ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>
+              className={`flex items-center gap-1.5 px-3 py-1 rounded text-sm font-medium transition-colors ${view === 'mappings' ? 'bg-white/[0.1] text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'text-zinc-500 hover:text-zinc-300'}`}>
               <List size={14} /> Mappings
             </button>
             <button onClick={() => setView('layout')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded text-sm font-medium transition-colors ${view === 'layout' ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>
+              className={`flex items-center gap-1.5 px-3 py-1 rounded text-sm font-medium transition-colors ${view === 'layout' ? 'bg-white/[0.1] text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]' : 'text-zinc-500 hover:text-zinc-300'}`}>
               <LayoutGrid size={14} /> Layout
             </button>
           </div>
@@ -1695,10 +1717,10 @@ export default function App() {
             <button onClick={async () => { setBusy(true); try { await invoke('stop_daemon'); await checkDaemon(); } finally { setBusy(false); } }}
               disabled={busy} className="flex items-center gap-1 text-sm text-zinc-400 hover:text-zinc-300 disabled:opacity-50"><Square size={13} /> Stop</button>
           )}
-          <button onClick={loadConfig} title="Refresh" className="p-1.5 hover:bg-zinc-800 rounded-lg"><RefreshCw size={16} /></button>
-          <button onClick={() => setShowSettings(true)} title="Settings" className="p-1.5 hover:bg-zinc-800 rounded-lg"><Settings size={16} /></button>
+          <button onClick={loadConfig} title="Refresh" className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] rounded-lg transition-colors"><RefreshCw size={16} /></button>
+          <button onClick={() => setShowSettings(true)} title="Settings" className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] rounded-lg transition-colors"><Settings size={16} /></button>
           <button onClick={saveConfig} disabled={!config || saving}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${isDirty ? 'bg-orange-500 hover:bg-orange-600 ring-1 ring-orange-400' : 'bg-orange-600 hover:bg-orange-700'}`}>
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${isDirty ? 'btn-primary text-white ring-1 ring-orange-300/70' : 'btn-primary text-white'}`}>
             <Save size={14} /> {saving ? 'Saving…' : isDirty ? 'Save*' : 'Save'}
           </button>
         </div>
@@ -1706,7 +1728,7 @@ export default function App() {
 
       {/* Daemon banner */}
       {!daemonInstalled && (
-        <div className="flex items-start gap-3 bg-zinc-900 border-b border-zinc-800 px-5 py-3 shrink-0">
+        <div className="flex items-start gap-3 bg-orange-500/[0.05] border-b border-orange-500/20 px-5 py-3 shrink-0">
           <AlertCircle className="text-orange-500 mt-0.5 shrink-0" size={15} />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">Daemon not installed</p>
@@ -1714,7 +1736,7 @@ export default function App() {
             {setupMsg && <p className={`text-xs mt-1 ${setupMsg.startsWith('Daemon') ? 'text-green-400' : 'text-red-400'}`}>{setupMsg}</p>}
           </div>
           <button onClick={async () => { setBusy(true); setSetupMsg(''); try { setSetupMsg(await invoke<string>('setup_daemon')); await checkDaemon(); await loadConfig(); } catch (e: any) { setSetupMsg(String(e)); } finally { setBusy(false); } }}
-            disabled={busy} className="shrink-0 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 px-3 py-1.5 rounded-lg text-xs font-medium">
+            disabled={busy} className="shrink-0 btn-primary text-white disabled:opacity-50 px-3 py-1.5 rounded-lg text-xs font-medium">
             {busy ? 'Installing…' : 'Install Daemon'}
           </button>
         </div>
@@ -1727,11 +1749,11 @@ export default function App() {
       ) : (
         <div className="flex-1 overflow-hidden flex flex-col">
           {/* Profile tabs */}
-          <div className="flex items-center gap-0.5 px-4 pt-2 pb-0 border-b border-zinc-800 shrink-0 overflow-x-auto">
+          <div className="flex items-center gap-0.5 px-4 pt-2 pb-0 border-b border-white/[0.06] shrink-0 overflow-x-auto">
             {config.profiles.map((p, i) => (
               <div key={p.name} className="flex items-center group">
                 <button onClick={() => { setProfileIdx(i); setLayerIdx(0); }}
-                  className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${i === profileIdx ? 'border-orange-500 text-orange-400 bg-zinc-800/50' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/30'}`}>
+                  className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${i === profileIdx ? 'border-orange-500 text-orange-400 bg-gradient-to-b from-white/[0.05] to-transparent' : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]'}`}>
                   {p.name}
                   {p.name === config.active_profile && <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-green-500 inline-block" title="Active" />}
                 </button>
@@ -1744,7 +1766,7 @@ export default function App() {
               <div className="flex items-center gap-1 ml-1">
                 <input autoFocus value={newProfileName} onChange={e => setNewProfileName(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') addProfile(); if (e.key === 'Escape') setAddingProfile(false); }}
-                  placeholder="Profile name" className="bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm outline-none focus:border-orange-500 w-32" />
+                  placeholder="Profile name" className="bg-black/30 border border-white/[0.1] rounded-lg px-2 py-1 text-sm outline-none focus:border-orange-500/60 placeholder:text-zinc-600 w-32" />
                 <button onClick={addProfile} className="text-orange-400 text-xs px-1">Add</button>
                 <button onClick={() => setAddingProfile(false)} className="text-zinc-500 text-xs">✕</button>
               </div>
@@ -1760,13 +1782,13 @@ export default function App() {
             <div className="flex-1 overflow-y-auto">
               {/* Layer tabs */}
               <div className="flex items-center gap-2 px-5 pt-4 pb-3 shrink-0">
-                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-lg p-0.5 gap-0.5">
+                <div className="flex items-center bg-white/[0.04] border border-white/[0.07] rounded-lg p-0.5 gap-0.5">
                   {profile.layers.map((l, i) => (
                     <div key={i} className="flex items-center group">
                       <button onClick={() => { manualLayerRef.current = i; setLayerIdx(i); }}
                         className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${
                           i === layerIdx
-                            ? liveLayerIdx === i ? 'bg-violet-600 text-white' : 'bg-orange-600 text-white'
+                            ? liveLayerIdx === i ? 'bg-violet-600 text-white shadow-[0_0_12px_rgba(139,92,246,0.4)]' : 'btn-primary text-white'
                             : 'text-zinc-400 hover:text-zinc-200'
                         }`}>
                         {l.name}{l.trigger && <span className="ml-1 text-xs opacity-60">({dk(l.trigger)})</span>}
@@ -1783,6 +1805,17 @@ export default function App() {
                     <span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block animate-pulse" /> Live preview
                   </span>
                 )}
+                <div className="ml-auto flex items-center gap-2" title="Pin this profile to one keyboard (e.g. a QMK board). Its bindings then apply only to that device; other keyboards keep using the active profile.">
+                  <span className="text-xs text-zinc-500">Keyboard</span>
+                  <select value={profile.device ?? ''} onChange={e => setProfileDevice(e.target.value)}
+                    className="bg-white/[0.04] border border-white/[0.07] rounded-lg px-2 py-1.5 text-xs text-zinc-300 outline-none focus:border-orange-500 max-w-[240px]">
+                    <option value="">All keyboards</option>
+                    {devices.map(d => <option key={d.id} value={d.id}>{d.name} ({d.id})</option>)}
+                    {profile.device && !devices.some(d => d.id === profile.device) && (
+                      <option value={profile.device}>{profile.device} (not connected)</option>
+                    )}
+                  </select>
+                </div>
               </div>
 
               {/* Main view */}
@@ -1801,8 +1834,8 @@ export default function App() {
                 <div className="px-5 pb-5 space-y-5">
                   {/* Mappings table */}
                   {layer && (
-                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                    <div className="panel rounded-2xl overflow-hidden">
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
                         <h2 className="text-sm font-semibold text-zinc-300">
                           Mappings — <span className="text-orange-400">{layer.name}</span>
                           {layer.trigger && <span className="text-zinc-500 text-xs ml-2">activated by {dk(layer.trigger)}</span>}
@@ -1814,7 +1847,7 @@ export default function App() {
                         <div className="py-10 text-center text-zinc-600 text-sm">No mappings yet. Click Add, or switch to Layout view to edit visually.</div>
                       ) : (
                         <table className="w-full text-left text-sm">
-                          <thead className="bg-zinc-800/50">
+                          <thead className="bg-white/[0.03]">
                             <tr>
                               <th className="px-4 py-2.5 text-xs font-semibold text-zinc-400 uppercase tracking-wider w-28">From</th>
                               <th className="px-4 py-2.5 text-xs font-semibold text-zinc-400 uppercase tracking-wider w-24">Behavior</th>
@@ -1822,7 +1855,7 @@ export default function App() {
                               <th className="px-4 py-2.5 w-12" />
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-zinc-800">
+                          <tbody className="divide-y divide-white/[0.05]">
                             {layer.mappings.map((m, i) => (
                               <tr key={i} onClick={() => setMappingModal({ mapping: m, mappingIdx: i })} className="hover:bg-white/5 cursor-pointer transition-colors">
                                 <td className="px-4 py-3 font-mono text-orange-400 font-medium">{dk(m.from)}</td>
@@ -1840,8 +1873,8 @@ export default function App() {
                   )}
 
                   {/* SOCD pairs */}
-                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+                  <div className="panel rounded-2xl overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
                       <div>
                         <h2 className="text-sm font-semibold text-zinc-300">SOCD Pairs</h2>
                         <p className="text-xs text-zinc-500 mt-0.5">Simultaneous opposing keys — applies to all layers in this profile.</p>
@@ -1852,14 +1885,14 @@ export default function App() {
                       <div className="py-8 text-center text-zinc-600 text-sm">No SOCD pairs configured.</div>
                     ) : (
                       <table className="w-full text-left text-sm">
-                        <thead className="bg-zinc-800/50">
+                        <thead className="bg-white/[0.03]">
                           <tr>
                             <th className="px-4 py-2.5 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Keys</th>
                             <th className="px-4 py-2.5 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Mode</th>
                             <th className="px-4 py-2.5 w-12" />
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-zinc-800">
+                        <tbody className="divide-y divide-white/[0.05]">
                           {profile.socd_pairs.map((pair, i) => (
                             <tr key={i} onClick={() => setSocdModal({ pair, idx: i })} className="hover:bg-white/5 cursor-pointer transition-colors">
                               <td className="px-4 py-3 font-mono text-orange-400 font-medium">{dk(pair.key1)} ↔ {dk(pair.key2)}</td>
@@ -1891,22 +1924,22 @@ export default function App() {
       {socdModal !== null && <SocdModal initial={socdModal.pair} onSave={p => saveSocd(p, socdModal.idx)} onClose={() => setSocdModal(null)} />}
       {layerModal !== null && <LayerModal initial={layerModal.layer} onSave={(n, t) => saveLayer(n, t, layerModal.idx)} onClose={() => setLayerModal(null)} />}
       {saveBeforeStart && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center" onClick={() => setSaveBeforeStart(false)}>
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={() => setSaveBeforeStart(false)}>
+          <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
               <h3 className="font-semibold">Unsaved changes</h3>
               <button onClick={() => setSaveBeforeStart(false)}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
             </div>
             <div className="p-4">
               <p className="text-sm text-zinc-300">You have unsaved changes. Save them before starting the daemon so your remappings take effect?</p>
             </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-zinc-800">
+            <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
               <button onClick={() => setSaveBeforeStart(false)}
                 className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
               <button onClick={async () => { setSaveBeforeStart(false); await startDaemon(); }}
-                className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 border border-zinc-700">Start anyway</button>
+                className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 border border-white/[0.1] hover:border-white/25 transition-colors">Start anyway</button>
               <button onClick={async () => { setSaveBeforeStart(false); await saveConfig(); await startDaemon(); }}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-orange-600 hover:bg-orange-700 transition-colors">Save & Start</button>
+                className="px-4 py-2 rounded-lg text-sm font-medium btn-primary text-white transition-colors">Save & Start</button>
             </div>
           </div>
         </div>

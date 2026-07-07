@@ -42,6 +42,12 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Profile {
     pub name: String,
+    /// Optional device matcher. When set, this profile is applied to keyboards
+    /// whose "vendor:product" id equals this string (e.g. "feed:6060" for many
+    /// QMK boards), or whose device name contains it (case-insensitive).
+    /// Devices not matched by any profile use the global active_profile.
+    #[serde(default)]
+    pub device: Option<String>,
     pub layers: Vec<Layer>,
     #[serde(default)]
     pub socd_pairs: Vec<SocdPair>,

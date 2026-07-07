@@ -15,5 +15,9 @@ shared = { path = "../../shared" }
 anyhow = "1.0"
 dirs = "5"
 
+# Linux: enumerate /dev/input keyboards for per-device profile assignment
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

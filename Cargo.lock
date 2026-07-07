@@ -1790,6 +1790,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
+ "evdev",
  "serde",
  "serde_json",
  "serde_yaml",

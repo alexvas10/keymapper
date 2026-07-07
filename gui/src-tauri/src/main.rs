@@ -77,6 +77,49 @@ fn get_active_layer() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Keyboard device listing — lets the user pin a profile to a specific board
+// (e.g. a QMK keyboard). Matches the daemon's detection: a device is a
+// keyboard if it reports KEY_SPACE; the daemon's own virtual device is
+// skipped.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct KbDevice {
+    name: String,
+    id: String, // "vendor:product" lowercase hex
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn list_keyboards() -> Vec<KbDevice> {
+    let mut seen = std::collections::HashSet::new();
+    evdev::enumerate()
+        .map(|(_, d)| d)
+        .filter(|d| {
+            d.name().map_or(true, |n| n != "KeyMapper")
+                && d.supported_keys()
+                    .map_or(false, |keys| keys.contains(evdev::Key::KEY_SPACE))
+        })
+        .filter_map(|d| {
+            let id = d.input_id();
+            let kb = KbDevice {
+                name: d.name().unwrap_or("unknown").to_string(),
+                id: format!("{:04x}:{:04x}", id.vendor(), id.product()),
+            };
+            // QMK boards expose several event nodes with the same identity —
+            // collapse them into one entry.
+            seen.insert(kb.id.clone()).then_some(kb)
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn list_keyboards() -> Vec<KbDevice> {
+    Vec::new() // per-device profiles are Linux-only
+}
+
+// ---------------------------------------------------------------------------
 // Linux daemon management (systemd user service)
 // ---------------------------------------------------------------------------
 
@@ -439,6 +482,7 @@ fn main() {
             get_gui_autostart,
             set_gui_autostart,
             get_active_layer,
+            list_keyboards,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

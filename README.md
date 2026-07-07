@@ -11,6 +11,8 @@ Inspired by tools like AutoHotkey and Wootility, KeyMapper provides a visual int
 - **Visual Editor:** A modern, visual GUI (Tauri + React) for mapping keys and building complex macros without touching a text editor.
 - **Hot-Reloading:** Any changes to the `config.yaml` are instantly picked up by the daemon.
 - **Portable Profiles:** Configurations are stored in simple YAML files that can be exported and shared across devices.
+- **Per-Keyboard Profiles (Linux):** Pin a profile to a specific keyboard — e.g. give your QMK board its own bindings while your laptop keyboard keeps the default profile.
+- **QMK / Custom Keyboard Friendly:** Extended media/system keycodes are supported, unknown keycodes pass through untouched (as remappable `Raw<code>` keys), and keyboards are picked up on hotplug — replugging or reflashing a board doesn't require a daemon restart.
 - **Cross-Platform:** Works on Windows, Linux, and macOS.
 
 ## 🛠️ Project Structure
@@ -82,6 +84,28 @@ profiles:
             key: ControlLeft
             delay_ms: 50
 ```
+
+### Per-keyboard profiles (QMK boards, etc.)
+
+On Linux, a profile can be bound to one physical keyboard with the `device` field —
+either the `vendor:product` id (hex, as shown by the GUI's Keyboard selector or
+`lsusb`; many QMK boards use `feed:xxxx`) or a case-insensitive substring of the
+device name:
+
+```yaml
+active_profile: default
+profiles:
+  - name: default          # used by every keyboard not matched below
+    ...
+  - name: my-qmk-board
+    device: "feed:6060"    # or e.g. device: "corne"
+    ...
+```
+
+Events from a matched keyboard always use that profile, regardless of the global
+active profile. In the GUI, select the device from the **Keyboard** dropdown next
+to the layer tabs. Keys the daemon has no name for are passed through and can be
+remapped as `Raw<keycode>`.
 
 ## 🛠️ Development
 

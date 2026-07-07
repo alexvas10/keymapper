@@ -13,10 +13,17 @@ use anyhow::Context;
 // to the shared processing loop.
 // ---------------------------------------------------------------------------
 
+/// Identity of a physical input device, used to route events to a profile.
+/// `id` is "vendor:product" in lowercase hex (e.g. "feed:6060" for many QMK
+/// boards); `name` is the kernel-reported device name.
+struct DevId {
+    name: String,
+    id: String,
+}
+
 enum DaemonEvent {
-    KeyPress(String),
-    KeyRelease(String),
-    HoldTimerFired(String),
+    Key { dev: Arc<DevId>, key: String, press: bool },
+    HoldTimerFired { profile: String, key: String },
     /// Inject directly to output, bypassing AppState (used by macro steps).
     InjectDirect(String, bool),
 }
@@ -41,8 +48,8 @@ struct ModTapState {
 enum SocdEff { Neither, Key1, Key2 }
 
 // ---------------------------------------------------------------------------
-// AppState — entirely platform-agnostic.
-// on_press / on_release / on_hold_timer return Vec<(String, bool)>:
+// AppState — entirely platform-agnostic, holds the runtime state for ONE
+// profile. on_press / on_release / on_hold_timer return Vec<(String, bool)>:
 //   (key_name, is_press)  to be injected by the platform layer.
 // ---------------------------------------------------------------------------
 
@@ -66,10 +73,9 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(config: Config) -> Self {
-        let active = config.active_profile.clone();
+    fn new(config: Config, profile_name: String) -> Self {
         let mut s = Self {
-            active_profile_name: active,
+            active_profile_name: profile_name,
             base_mappings: HashMap::new(),
             layer_mappings: vec![],
             layer_triggers: HashMap::new(),
@@ -117,13 +123,6 @@ impl AppState {
                 self.layer_mappings.push(mappings);
             }
         }
-    }
-
-    fn update_config(&mut self, config: Config) {
-        self.active_profile_name = config.active_profile.clone();
-        self.config = config;
-        self.rebuild();
-        println!("Config reloaded. Active profile: {}", self.active_profile_name);
     }
 
     fn get_mapping(&self, key: &str) -> Option<&Target> {
@@ -197,11 +196,12 @@ impl AppState {
                     cancel_tx: Some(cancel_tx),
                 });
                 let key_owned = key.to_owned();
+                let profile = self.active_profile_name.clone();
                 let tx2 = tx.clone();
                 tokio::spawn(async move {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(hold_ms)) => {
-                            let _ = tx2.send(DaemonEvent::HoldTimerFired(key_owned)).await;
+                            let _ = tx2.send(DaemonEvent::HoldTimerFired { profile, key: key_owned }).await;
                         }
                         _ = cancel_rx => {}
                     }
@@ -436,6 +436,92 @@ fn socd_release(
 }
 
 // ---------------------------------------------------------------------------
+// Engine — routes device events to per-profile AppStates.
+//
+// A profile with `device: Some(matcher)` is applied to keyboards whose
+// "vendor:product" id equals the matcher, or whose name contains it
+// (case-insensitive). This is how bindings are saved for a specific board
+// (e.g. a QMK keyboard) independently of the global active profile.
+// Devices not matched by any profile use `active_profile`.
+// ---------------------------------------------------------------------------
+
+struct Engine {
+    config: Config,
+    states: HashMap<String, AppState>,
+}
+
+impl Engine {
+    fn new(config: Config) -> Self {
+        let mut e = Engine { config: Config { profiles: vec![], active_profile: String::new(), settings: config.settings.clone() }, states: HashMap::new() };
+        e.update_config(config);
+        e
+    }
+
+    fn update_config(&mut self, config: Config) {
+        self.states = config.profiles.iter()
+            .map(|p| (p.name.clone(), AppState::new(config.clone(), p.name.clone())))
+            .collect();
+        self.config = config;
+        println!("Config loaded. Active profile: {} ({} profile state(s))",
+            self.config.active_profile, self.states.len());
+    }
+
+    fn profile_for_device(&self, dev: &DevId) -> String {
+        let name_lc = dev.name.to_lowercase();
+        self.config.profiles.iter()
+            .find(|p| p.device.as_deref().map_or(false, |m| {
+                let m = m.trim();
+                !m.is_empty() && (m.eq_ignore_ascii_case(&dev.id) || name_lc.contains(&m.to_lowercase()))
+            }))
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| self.config.active_profile.clone())
+    }
+
+    fn state_for(&mut self, profile: &str) -> Option<&mut AppState> {
+        if self.states.contains_key(profile) {
+            self.states.get_mut(profile)
+        } else {
+            // Fallback: active profile, then any profile.
+            let active = self.config.active_profile.clone();
+            if self.states.contains_key(&active) {
+                self.states.get_mut(&active)
+            } else {
+                self.states.values_mut().next()
+            }
+        }
+    }
+
+    /// Process one routed event; returns (events_to_inject, display_layer).
+    fn handle(&mut self, event: DaemonEvent, tx: &mpsc::Sender<DaemonEvent>) -> (Vec<(String, bool)>, String) {
+        match event {
+            DaemonEvent::InjectDirect(key, pressed) => {
+                let layer = self.state_for("").map(|s| s.active_display_layer.clone())
+                    .unwrap_or_else(|| "base".to_string());
+                (vec![(key, pressed)], layer)
+            }
+            DaemonEvent::Key { dev, key, press } => {
+                let profile = self.profile_for_device(&dev);
+                let tx = tx.clone();
+                match self.state_for(&profile) {
+                    Some(s) => {
+                        let out = if press { s.on_press(&key, &tx) } else { s.on_release(&key) };
+                        (out, s.active_display_layer.clone())
+                    }
+                    // No profiles at all: pass through untouched.
+                    None => (vec![(key, press)], "base".to_string()),
+                }
+            }
+            DaemonEvent::HoldTimerFired { profile, key } => {
+                match self.state_for(&profile) {
+                    Some(s) => (s.on_hold_timer(&key), s.active_display_layer.clone()),
+                    None => (vec![], "base".to_string()),
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Config + state file paths
 // ---------------------------------------------------------------------------
 
@@ -527,7 +613,22 @@ mod linux {
             "KpReturn"=>EKey::KEY_KPENTER,"KpDelete"=>EKey::KEY_KPDOT,
             "VolumeUp"=>EKey::KEY_VOLUMEUP,"VolumeDown"=>EKey::KEY_VOLUMEDOWN,
             "VolumeMute"=>EKey::KEY_MUTE,
-            _ => return None,
+            "PlayPause"=>EKey::KEY_PLAYPAUSE,"MediaStop"=>EKey::KEY_STOPCD,
+            "MediaNext"=>EKey::KEY_NEXTSONG,"MediaPrevious"=>EKey::KEY_PREVIOUSSONG,
+            "Menu"=>EKey::KEY_COMPOSE,
+            "BrightnessUp"=>EKey::KEY_BRIGHTNESSUP,"BrightnessDown"=>EKey::KEY_BRIGHTNESSDOWN,
+            "Calculator"=>EKey::KEY_CALC,"Mail"=>EKey::KEY_MAIL,
+            "WWWHome"=>EKey::KEY_HOMEPAGE,"WWWSearch"=>EKey::KEY_SEARCH,
+            "Eject"=>EKey::KEY_EJECTCD,"Sleep"=>EKey::KEY_SLEEP,
+            // Fallback for any other evdev code (QMK boards can emit codes we
+            // have no friendly name for): "Raw<code>" round-trips through the
+            // config unchanged.
+            _ => {
+                if let Some(code) = name.strip_prefix("Raw").and_then(|c| c.parse::<u16>().ok()) {
+                    return Some(EKey::new(code));
+                }
+                return None;
+            }
         })
     }
 
@@ -565,21 +666,47 @@ mod linux {
             78=>"KpPlus",74=>"KpMinus",55=>"KpMultiply",98=>"KpDivide",
             96=>"KpReturn",83=>"KpDelete",
             115=>"VolumeUp",114=>"VolumeDown",113=>"VolumeMute",
+            164=>"PlayPause",166=>"MediaStop",163=>"MediaNext",165=>"MediaPrevious",
+            127=>"Menu",225=>"BrightnessUp",224=>"BrightnessDown",
+            140=>"Calculator",155=>"Mail",172=>"WWWHome",217=>"WWWSearch",
+            161=>"Eject",142=>"Sleep",
             _ => return None,
         })
+    }
+
+    /// Name for any evdev code — falls back to "Raw<code>" so keys we have no
+    /// friendly name for are still remappable and pass through instead of
+    /// being swallowed by the exclusive grab.
+    pub fn code_to_name(code: u16) -> String {
+        key_to_name(EKey::new(code))
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| format!("Raw{code}"))
     }
 
     // ------------------------------------------------------------------
     // Find all keyboard devices in /dev/input/
     // A device is considered a keyboard if it reports KEY_SPACE.
+    // Our own uinput device (and any other "KeyMapper" virtual device) is
+    // excluded so we never grab our own output and feed back into ourselves.
     // ------------------------------------------------------------------
 
-    fn find_keyboards() -> Vec<Device> {
-        evdev::enumerate()
-            .map(|(_, d)| d)
-            .filter(|d| d.supported_keys()
-                .map_or(false, |keys| keys.contains(EKey::KEY_SPACE)))
-            .collect()
+    const VIRT_NAME: &str = "KeyMapper";
+
+    fn is_keyboard(d: &Device) -> bool {
+        d.name().map_or(true, |n| n != VIRT_NAME)
+            && d.supported_keys().map_or(false, |keys| keys.contains(EKey::KEY_SPACE))
+    }
+
+    fn find_keyboards() -> Vec<(PathBuf, Device)> {
+        evdev::enumerate().filter(|(_, d)| is_keyboard(d)).collect()
+    }
+
+    fn dev_id(d: &Device) -> Arc<DevId> {
+        let id = d.input_id();
+        Arc::new(DevId {
+            name: d.name().unwrap_or("unknown").to_owned(),
+            id: format!("{:04x}:{:04x}", id.vendor(), id.product()),
+        })
     }
 
     // ------------------------------------------------------------------
@@ -587,31 +714,16 @@ mod linux {
     // ------------------------------------------------------------------
 
     fn create_virtual_device() -> anyhow::Result<evdev::uinput::VirtualDevice> {
-        const ALL_NAMES: &[&str] = &[
-            "KeyA","KeyB","KeyC","KeyD","KeyE","KeyF","KeyG","KeyH","KeyI","KeyJ",
-            "KeyK","KeyL","KeyM","KeyN","KeyO","KeyP","KeyQ","KeyR","KeyS","KeyT",
-            "KeyU","KeyV","KeyW","KeyX","KeyY","KeyZ",
-            "Num0","Num1","Num2","Num3","Num4","Num5","Num6","Num7","Num8","Num9",
-            "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
-            "F13","F14","F15","F16","F17","F18","F19","F20","F21","F22","F23","F24",
-            "ShiftLeft","ShiftRight","ControlLeft","ControlRight",
-            "Alt","AltGr","MetaLeft","MetaRight","CapsLock",
-            "Return","Backspace","Tab","Space","Escape",
-            "UpArrow","DownArrow","LeftArrow","RightArrow",
-            "Home","End","PageUp","PageDown","Insert","Delete",
-            "PrintScreen","ScrollLock","Pause","NumLock",
-            "BackQuote","Minus","Equal","LeftBracket","RightBracket",
-            "BackSlash","SemiColon","Quote","Comma","Dot","Slash","IntlBackslash",
-            "Kp0","Kp1","Kp2","Kp3","Kp4","Kp5","Kp6","Kp7","Kp8","Kp9",
-            "KpPlus","KpMinus","KpMultiply","KpDivide","KpReturn","KpDelete",
-            "VolumeUp","VolumeDown","VolumeMute",
-        ];
-        let keys: AttributeSet<EKey> = ALL_NAMES.iter()
-            .filter_map(|n| name_to_key(n))
-            .collect();
+        // Register the full kernel key range (1..=0x2e7) so anything a
+        // physical board can send — including QMK media/system keys and
+        // codes we have no friendly name for — can be re-emitted.
+        let mut keys: AttributeSet<EKey> = AttributeSet::new();
+        for code in 1..=0x2e7u16 {
+            keys.insert(EKey::new(code));
+        }
         Ok(VirtualDeviceBuilder::new()
             .context("open /dev/uinput — is the uinput module loaded and are you in the uinput group?")?
-            .name("KeyMapper")
+            .name(VIRT_NAME)
             .with_keys(&keys)
             .context("with_keys")?
             .build()
@@ -638,55 +750,96 @@ mod linux {
     // Linux async event loop
     // ------------------------------------------------------------------
 
-    pub async fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
+    /// Grab a device and spawn its reader task. The grabbed-paths set keeps
+    /// hotplug rescans from double-grabbing; a path is released when the
+    /// reader exits (device unplugged / read error).
+    fn grab_and_spawn(
+        path: PathBuf,
+        mut dev: Device,
+        tx: mpsc::Sender<DaemonEvent>,
+        grabbed: Arc<Mutex<HashSet<PathBuf>>>,
+    ) {
+        let dev_id = dev_id(&dev);
+        if let Err(e) = dev.grab() {
+            eprintln!("Could not grab {} ({}): {e}", dev_id.name, path.display());
+            grabbed.lock().unwrap().remove(&path);
+            return;
+        }
+        println!("Grabbed keyboard: {} [{}]", dev_id.name, dev_id.id);
+        tokio::spawn(async move {
+            let mut stream = match dev.into_event_stream() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("event_stream error: {e}");
+                    grabbed.lock().unwrap().remove(&path);
+                    return;
+                }
+            };
+            loop {
+                match stream.next_event().await {
+                    Err(e) => {
+                        println!("Keyboard disconnected: {} ({e})", dev_id.name);
+                        break;
+                    }
+                    Ok(ev) if ev.event_type() == EventType::KEY => {
+                        let value = ev.value();
+                        if value == 0 || value == 1 { // 0=release 1=press (skip 2=autorepeat)
+                            let event = DaemonEvent::Key {
+                                dev: dev_id.clone(),
+                                key: code_to_name(ev.code()),
+                                press: value == 1,
+                            };
+                            let _ = tx.send(event).await;
+                        }
+                    }
+                    Ok(_) => {}
+                }
+            }
+            grabbed.lock().unwrap().remove(&path);
+        });
+    }
+
+    fn scan_keyboards(tx: &mpsc::Sender<DaemonEvent>, grabbed: &Arc<Mutex<HashSet<PathBuf>>>) -> usize {
+        let mut new = 0;
+        for (path, dev) in find_keyboards() {
+            if !grabbed.lock().unwrap().insert(path.clone()) {
+                continue; // already grabbed
+            }
+            grab_and_spawn(path, dev, tx.clone(), grabbed.clone());
+            new += 1;
+        }
+        new
+    }
+
+    pub async fn run(state: Arc<Mutex<Engine>>) -> anyhow::Result<()> {
         let config_path = config_path();
         let (tx, mut rx) = mpsc::channel::<DaemonEvent>(1000);
 
+        // --- Create virtual output device BEFORE grabbing, so the grab
+        //     filter (which skips VIRT_NAME) always sees it. ---
+        let mut virt = create_virtual_device()?;
+        println!("Virtual keyboard created.");
+
         // --- Grab keyboards ---
-        let keyboards = find_keyboards();
-        if keyboards.is_empty() {
+        let grabbed: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
+        if scan_keyboards(&tx, &grabbed) == 0 {
             anyhow::bail!(
                 "No keyboard devices found in /dev/input/.\n\
                  Make sure you are in the 'input' group (run setup_linux.sh)."
             );
         }
 
-        for mut dev in keyboards {
-            let name = dev.name().unwrap_or("unknown").to_owned();
-            dev.grab().with_context(|| format!("grab {name}"))?;
-            println!("Grabbed keyboard: {name}");
-            let tx2 = tx.clone();
-            tokio::spawn(async move {
-                let mut stream = match dev.into_event_stream() {
-                    Ok(s) => s,
-                    Err(e) => { eprintln!("event_stream error: {e}"); return; }
-                };
-                loop {
-                    match stream.next_event().await {
-                        Err(e) => { eprintln!("read error: {e}"); break; }
-                        Ok(ev) if ev.event_type() == EventType::KEY => {
-                            let value = ev.value();
-                            if value == 0 || value == 1 { // 0=release 1=press (skip 2=autorepeat)
-                                let key = EKey::new(ev.code());
-                                if let Some(name) = key_to_name(key) {
-                                    let event = if value == 1 {
-                                        DaemonEvent::KeyPress(name.to_owned())
-                                    } else {
-                                        DaemonEvent::KeyRelease(name.to_owned())
-                                    };
-                                    let _ = tx2.send(event).await;
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                    }
-                }
-            });
-        }
-
-        // --- Create virtual output device ---
-        let mut virt = create_virtual_device()?;
-        println!("Virtual keyboard created.");
+        // --- Watch /dev/input for hotplug (QMK boards re-enumerate on
+        //     replug and firmware flashes) ---
+        let (dev_tx, mut dev_rx) = mpsc::channel::<()>(4);
+        let mut dev_watcher = notify::RecommendedWatcher::new(
+            move |res: Result<notify::Event, _>| {
+                if res.is_ok() { let _ = dev_tx.blocking_send(()); }
+            },
+            NotifyConfig::default(),
+        )?;
+        dev_watcher.watch(std::path::Path::new("/dev/input"), RecursiveMode::NonRecursive)?;
+        println!("Watching /dev/input for keyboard hotplug.");
 
         // --- Watch config file ---
         let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
@@ -704,27 +857,18 @@ mod linux {
         loop {
             tokio::select! {
                 Some(event) = rx.recv() => {
-                    let (to_inject, layer_name) = match event {
-                        DaemonEvent::InjectDirect(key, pressed) => {
-                            let layer = state.lock().unwrap().active_display_layer.clone();
-                            (vec![(key, pressed)], layer)
-                        }
-                        _ => {
-                            let mut s = state.lock().unwrap();
-                            let out = match event {
-                                DaemonEvent::KeyPress(k)      => s.on_press(&k, &tx),
-                                DaemonEvent::KeyRelease(k)    => s.on_release(&k),
-                                DaemonEvent::HoldTimerFired(k)=> s.on_hold_timer(&k),
-                                DaemonEvent::InjectDirect(..) => unreachable!(),
-                            };
-                            (out, s.active_display_layer.clone())
-                        }
-                    };
+                    let (to_inject, layer_name) = state.lock().unwrap().handle(event, &tx);
                     if layer_name != last_layer {
                         write_state(&layer_name);
                         last_layer = layer_name;
                     }
                     inject(&mut virt, &to_inject);
+                }
+                Some(_) = dev_rx.recv() => {
+                    // Give udev a moment to apply permissions on the new node.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    while dev_rx.try_recv().is_ok() {} // coalesce bursts
+                    scan_keyboards(&tx, &grabbed);
                 }
                 Some(_) = cfg_rx.recv() => {
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -772,10 +916,15 @@ mod windows {
         }
     }
 
-    pub async fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
+    pub async fn run(state: Arc<Mutex<Engine>>) -> anyhow::Result<()> {
         let config_path = config_path();
         let (tx, mut rx) = mpsc::channel::<DaemonEvent>(1000);
         let tx_grab = tx.clone();
+
+        // Windows low-level hooks give no per-device identity, so all input
+        // routes to the global active profile (device-pinned profiles are a
+        // Linux-only feature).
+        let dev_grab: Arc<DevId> = Arc::new(DevId { name: String::new(), id: String::new() });
 
         thread::spawn(move || {
             let _ = rdev::grab(move |event: rdev::Event| {
@@ -785,13 +934,13 @@ mod windows {
                 match event.event_type {
                     rdev::EventType::KeyPress(key) => {
                         if let Some(name) = key_to_name(&key) {
-                            let _ = tx_grab.blocking_send(DaemonEvent::KeyPress(name));
+                            let _ = tx_grab.blocking_send(DaemonEvent::Key { dev: dev_grab.clone(), key: name, press: true });
                         }
                         None
                     }
                     rdev::EventType::KeyRelease(key) => {
                         if let Some(name) = key_to_name(&key) {
-                            let _ = tx_grab.blocking_send(DaemonEvent::KeyRelease(name));
+                            let _ = tx_grab.blocking_send(DaemonEvent::Key { dev: dev_grab.clone(), key: name, press: false });
                         }
                         None
                     }
@@ -815,22 +964,7 @@ mod windows {
         loop {
             tokio::select! {
                 Some(event) = rx.recv() => {
-                    let (to_inject, layer_name) = match event {
-                        DaemonEvent::InjectDirect(key, pressed) => {
-                            let layer = state.lock().unwrap().active_display_layer.clone();
-                            (vec![(key, pressed)], layer)
-                        }
-                        _ => {
-                            let mut s = state.lock().unwrap();
-                            let out = match event {
-                                DaemonEvent::KeyPress(k)       => s.on_press(&k, &tx),
-                                DaemonEvent::KeyRelease(k)     => s.on_release(&k),
-                                DaemonEvent::HoldTimerFired(k) => s.on_hold_timer(&k),
-                                DaemonEvent::InjectDirect(..)  => unreachable!(),
-                            };
-                            (out, s.active_display_layer.clone())
-                        }
-                    };
+                    let (to_inject, layer_name) = state.lock().unwrap().handle(event, &tx);
                     if layer_name != last_layer {
                         write_state(&layer_name);
                         last_layer = layer_name;
@@ -852,6 +986,72 @@ mod windows {
 }
 
 // ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        let base_layer = shared::Layer { name: "base".into(), trigger: None, mappings: vec![] };
+        Config {
+            settings: shared::AppSettings::default(),
+            active_profile: "default".into(),
+            profiles: vec![
+                shared::Profile { name: "default".into(), device: None, layers: vec![base_layer.clone()], socd_pairs: vec![] },
+                shared::Profile { name: "qmk".into(), device: Some("feed:6060".into()), layers: vec![base_layer.clone()], socd_pairs: vec![] },
+                shared::Profile { name: "corne".into(), device: Some("Corne".into()), layers: vec![base_layer], socd_pairs: vec![] },
+            ],
+        }
+    }
+
+    #[test]
+    fn routes_by_vendor_product_id() {
+        let e = Engine::new(test_config());
+        let dev = DevId { name: "some qmk board".into(), id: "feed:6060".into() };
+        assert_eq!(e.profile_for_device(&dev), "qmk");
+    }
+
+    #[test]
+    fn routes_by_name_substring_case_insensitive() {
+        let e = Engine::new(test_config());
+        let dev = DevId { name: "foostan corne v4".into(), id: "4653:0001".into() };
+        assert_eq!(e.profile_for_device(&dev), "corne");
+    }
+
+    #[test]
+    fn unmatched_device_uses_active_profile() {
+        let e = Engine::new(test_config());
+        let dev = DevId { name: "Generic USB Keyboard".into(), id: "046d:c31c".into() };
+        assert_eq!(e.profile_for_device(&dev), "default");
+    }
+
+    #[test]
+    fn unmapped_key_passes_through() {
+        let mut e = Engine::new(test_config());
+        let (tx, _rx) = mpsc::channel::<DaemonEvent>(16);
+        let dev = Arc::new(DevId { name: "kb".into(), id: "feed:6060".into() });
+        let (out, _) = e.handle(DaemonEvent::Key { dev: dev.clone(), key: "Raw164".into(), press: true }, &tx);
+        assert_eq!(out, vec![("Raw164".to_string(), true)]);
+        let (out, _) = e.handle(DaemonEvent::Key { dev, key: "Raw164".into(), press: false }, &tx);
+        assert_eq!(out, vec![("Raw164".to_string(), false)]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_key_names_round_trip() {
+        // Named key
+        assert_eq!(linux::code_to_name(164), "PlayPause");
+        assert_eq!(linux::name_to_key("PlayPause").map(|k| k.code()), Some(164));
+        // Unnamed key falls back to Raw<code> and maps back to the same code
+        let name = linux::code_to_name(250);
+        assert_eq!(name, "Raw250");
+        assert_eq!(linux::name_to_key(&name).map(|k| k.code()), Some(250));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -867,6 +1067,7 @@ async fn main() -> anyhow::Result<()> {
             settings: shared::AppSettings::default(),
             profiles: vec![shared::Profile {
                 name: "default".to_string(),
+                device: None,
                 layers: vec![shared::Layer {
                     name: "base".to_string(),
                     trigger: None,
@@ -888,7 +1089,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = load_config(&config_path)?;
-    let state = Arc::new(Mutex::new(AppState::new(config)));
+    let state = Arc::new(Mutex::new(Engine::new(config)));
     println!("KeyMapper daemon starting — config: {}", config_path.display());
 
     #[cfg(target_os = "linux")]
