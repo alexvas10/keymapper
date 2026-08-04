@@ -77,6 +77,37 @@ fn get_active_layer() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Typing-trainer progress
+//
+// Stored beside the config as opaque JSON: the shape is owned by the frontend
+// (per-profile key statistics and unlocked keys) and is free to evolve without
+// a matching change here.
+// ---------------------------------------------------------------------------
+
+fn typing_stats_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("keymapper")
+        .join("typing_stats.json")
+}
+
+#[tauri::command]
+fn get_typing_stats() -> Option<serde_json::Value> {
+    let content = fs::read_to_string(typing_stats_path()).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+#[tauri::command]
+fn save_typing_stats(stats: serde_json::Value) -> Result<(), String> {
+    let path = typing_stats_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string(&stats).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Keyboard device listing — lets the user pin a profile to a specific board
 // (e.g. a QMK keyboard). Matches the daemon's detection: a device is a
 // keyboard if it reports KEY_SPACE; the daemon's own virtual device is
@@ -483,6 +514,8 @@ fn main() {
             set_gui_autostart,
             get_active_layer,
             list_keyboards,
+            get_typing_stats,
+            save_typing_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

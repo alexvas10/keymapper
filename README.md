@@ -11,6 +11,7 @@ Inspired by tools like AutoHotkey and Wootility, KeyMapper provides a visual int
 - **Visual Editor:** A modern, visual GUI (Tauri + React) for mapping keys and building complex macros without touching a text editor.
 - **Hot-Reloading:** Any changes to the `config.yaml` are instantly picked up by the daemon.
 - **Portable Profiles:** Configurations are stored in simple YAML files that can be exported and shared across devices.
+- **Built-in Typing Trainer:** A keybr-style Practice view that teaches you the layout you just built, with a live keyboard guide showing where each letter now lives.
 - **Per-Keyboard Profiles (Linux):** Pin a profile to a specific keyboard — e.g. give your QMK board its own bindings while your laptop keyboard keeps the default profile.
 - **QMK / Custom Keyboard Friendly:** Extended media/system keycodes are supported, unknown keycodes pass through untouched (as remappable `Raw<code>` keys), and keyboards are picked up on hotplug — replugging or reflashing a board doesn't require a daemon restart.
 - **Cross-Platform:** Works on Windows, Linux, and macOS.
@@ -62,6 +63,36 @@ cd gui
 npm install
 npm run tauri dev
 ```
+
+## 🎓 Practice
+
+Remapping your keyboard is the easy part — relearning it is the work. The **Practice** tab is a
+typing trainer modelled on [keybr](https://www.keybr.com), built around the layout you have
+configured rather than a fixed one.
+
+- **Letters arrive by frequency, not by position.** Lessons start with the six most common letters
+  in English (`e t a o i n`) and add another only once every letter in play is at your target
+  speed. Because the order comes from the language, it works identically for QWERTY, Colemak,
+  Dvorak or anything you invented yourself — only *where* the letters sit changes.
+- **Whole real words, every one containing the letter you are drilling.** This is how keybr does it,
+  and it is what builds muscle memory for words rather than for isolated keys — a lesson on `e` with
+  six letters unlocked reads `tie eat eaten intent tone none neat tent attention nine note ten`.
+  Words are drawn from the commonest four thousand English words that your layout can spell. If an
+  alphabet is too sparse to spell enough of them, pseudo-words from a character-level trigram model
+  of English fill in — and they contain the drilled letter too.
+- **A key is learnt when you hit the target speed on it** — `confidence = targetTime / yourTime`,
+  so 1.0 means you are typing that key at target. The weakest key is focused and drilled harder.
+- **The keyboard guide** is a 60% board — the function row, arrows and numpad play no part in
+  typing — showing each key's remapped output, the legend printed on your physical keycap, the
+  finger to use, and the next key to press. Letters not yet unlocked are dimmed.
+- **Works with the daemon running or stopped.** *Automatic* reads keystrokes as remapped by the
+  daemon when it is running, and applies your mappings in the app when it is not, so you can
+  practise a layout before committing to it. *In-app* forces the latter. *Raw* applies nothing at
+  all and drills the board as its keycaps read — for when the remapping already lives in your
+  keyboard's own firmware (VIA, QMK, Wootility). Raw progress is tracked separately from your
+  profiles.
+
+Per-key statistics are stored per profile in `typing_stats.json` alongside your config.
 
 ## 📝 Configuration (YAML)
 
