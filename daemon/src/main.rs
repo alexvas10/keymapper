@@ -35,7 +35,6 @@ enum DaemonEvent {
 struct ModTapState {
     hold_key: String,
     tap_key: String,
-    hold_ms: u64,
     in_hold_mode: bool,
     cancel_tx: Option<oneshot::Sender<()>>,
 }
@@ -191,7 +190,6 @@ impl AppState {
                 self.mod_tap.insert(key.to_owned(), ModTapState {
                     hold_key: hold,
                     tap_key: tap,
-                    hold_ms,
                     in_hold_mode: false,
                     cancel_tx: Some(cancel_tx),
                 });

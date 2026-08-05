@@ -37,12 +37,37 @@ Inspired by tools like AutoHotkey and Wootility, KeyMapper provides a visual int
    ```
 
 ### Windows
-1. Run PowerShell as **Administrator**.
-2. Run the installation script:
+
+**Prerequisite — the Windows SDK.** Rust's MSVC target links against the SDK's import
+libraries (`kernel32.lib`, `user32.lib`) and needs `rc.exe` to embed the app manifest. Without
+it the build fails with `LNK1181: cannot open input file 'kernel32.lib'`. Install it from the
+**Visual Studio Installer** → *Modify* → *Individual components* → latest **Windows 11 SDK**
+(or the whole *Desktop development with C++* workload). Don't use `winget` for this — the only
+Windows SDKs it publishes are from 2018.
+
+This is a build-time requirement only. Machines that merely *run* KeyMapper need nothing extra.
+
+1. Build the daemon (this locates MSVC via `vswhere` and sets up the developer environment,
+   which is not on `PATH` by default):
+   ```powershell
+   .\build_windows.ps1 -DaemonOnly
+   ```
+   Omit `-DaemonOnly` to build the GUI as well.
+2. Install it and register autostart at logon — no administrator rights required:
    ```powershell
    .\setup_windows.ps1
    ```
-*Note: For the lowest latency and remapping in Administrator windows (like Task Manager), the binary must be installed in `C:\Program Files` and digitally signed.*
+   To remove it again: `.\setup_windows.ps1 -Uninstall`
+
+This installs a **Scheduled Task**, not a Windows service. The daemon intercepts input with a
+`WH_KEYBOARD_LL` hook, and low-level keyboard hooks are only delivered to a process on the
+interactive desktop. Services run in session 0, which has no desktop, so a service would start
+and then never receive a keystroke.
+
+*Note: remapping does not apply inside elevated windows (Task Manager, UAC prompts). That
+requires `uiAccess="true"`, which Windows only permits for an Authenticode-signed binary in a
+secure location — it refuses to launch an unsigned one at all. Once you have a certificate,
+build with `.\build_windows.ps1 -UiAccess` and install to `C:\Program Files`.*
 
 ### macOS
 1. Build the daemon and add it to **System Settings > Privacy & Security > Accessibility**.
@@ -140,8 +165,10 @@ remapped as `Raw<keycode>`.
 
 ## 🛠️ Development
 
-- **Prerequisites:** Rust, Node.js, and platform-specific build tools (build-essential, x11-dev, etc.).
-- **Build All:** `cargo build --release`
+- **Prerequisites:** Rust, Node.js, and platform-specific build tools (Linux: build-essential,
+  x11-dev, etc. — Windows: MSVC and the Windows SDK, see [Installation](#windows)).
+- **Build All:** `cargo build --release` (on Windows use `.\build_windows.ps1`, which sets up
+  the MSVC developer environment first)
 - **Run Tests:** `cargo test`
 
 ## ⚖️ License
