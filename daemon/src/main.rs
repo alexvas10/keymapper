@@ -523,14 +523,68 @@ impl Engine {
 // Config + state file paths
 // ---------------------------------------------------------------------------
 
-fn config_path() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
-        .join("keymapper").join("config.yaml")
+/// Everything the daemon reads and writes lives here.
+///
+/// Deliberately *not* `dirs::config_dir()`. The configuration is edited by a
+/// website through the File System Access API, and Chromium blocklists the
+/// per-platform config directory outright — `~/.config` on Linux, `%APPDATA%`
+/// on Windows, `~/Library` on macOS — so a browser can neither open nor write
+/// a file there, not even one the user picks by hand. Anything directly under
+/// the home directory is reachable, so that is where the config lives.
+fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("KEYMAPPER_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join("KeyMapper")
 }
 
-fn state_path() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
-        .join("keymapper").join("state.json")
+/// Where releases before the web UI kept their files.
+fn legacy_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("keymapper")
+}
+
+fn config_path() -> PathBuf { data_dir().join("config.yaml") }
+fn state_path() -> PathBuf { data_dir().join("state.json") }
+fn devices_path() -> PathBuf { data_dir().join("devices.json") }
+
+/// Move a pre-web-UI installation's files into `data_dir()`.
+///
+/// The files are *moved*, not copied: two files both claiming to be the config
+/// is worse than one in an unfamiliar place, and the README documents editing
+/// the config by hand — an edit to a stale copy that silently does nothing is
+/// the failure this avoids. A breadcrumb is left behind so anyone returning to
+/// the old path finds out where it went.
+fn migrate_legacy() {
+    let (old, new) = (legacy_dir(), data_dir());
+    if old == new || !old.is_dir() || config_path().exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&new).is_err() {
+        return;
+    }
+    let mut moved = Vec::new();
+    for name in ["config.yaml", "typing_stats.json", "state.json"] {
+        let (src, dst) = (old.join(name), new.join(name));
+        // `rename` would overwrite. Never let a migration destroy a file that
+        // is already in the new location — practice statistics can exist there
+        // before a config does.
+        if src.exists() && !dst.exists() && std::fs::rename(&src, &dst).is_ok() {
+            moved.push(name);
+        }
+    }
+    if moved.is_empty() {
+        return;
+    }
+    println!("Moved {} from {} to {}", moved.join(", "), old.display(), new.display());
+    let _ = std::fs::write(
+        old.join("MOVED.txt"),
+        format!(
+            "KeyMapper's files now live in:\n\n    {}\n\n\
+             They moved because the configuration is edited from a website, and browsers\n\
+             refuse to open files under this directory for security reasons.\n",
+            new.display()
+        ),
+    );
 }
 
 fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
@@ -538,10 +592,46 @@ fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
     serde_yaml::from_str(&content).context("parse config")
 }
 
+/// Publishes what the daemon is doing, for the web UI to read when a tab
+/// happens to be open. Write-only — nothing here is ever read back, and the
+/// daemon neither knows nor cares whether anyone is looking.
+///
+/// `updated_at` doubles as a liveness heartbeat: a browser cannot check whether
+/// `pid` is alive, so a timestamp that stops advancing is how the UI notices
+/// the daemon has stopped.
 fn write_state(layer_name: &str) {
     let path = state_path();
     if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
-    let _ = std::fs::write(&path, format!("{{\"layer\":\"{}\"}}", layer_name));
+    let state = serde_json::json!({
+        "layer": layer_name,
+        "pid": std::process::id(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "updated_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    });
+    let _ = std::fs::write(&path, state.to_string());
+}
+
+/// How often the heartbeat in `state.json` is refreshed while nothing else
+/// happens. The UI should treat a timestamp older than a few multiples of this
+/// as "daemon stopped".
+const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// Publishes the connected keyboards so the web UI can offer them for
+/// per-device profiles. Replaces the enumeration the Tauri GUI used to do
+/// in-process; a browser cannot enumerate input devices itself (WebHID is
+/// Chromium-only and would not report the evdev name anyway).
+#[allow(dead_code)] // only called on Linux, where per-device profiles exist
+fn write_devices(devices: &[(String, String)]) {
+    let path = devices_path();
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    let list: Vec<_> = devices
+        .iter()
+        .map(|(name, id)| serde_json::json!({ "name": name, "id": id }))
+        .collect();
+    let _ = std::fs::write(&path, serde_json::json!(list).to_string());
 }
 
 // ---------------------------------------------------------------------------
@@ -799,13 +889,24 @@ mod linux {
 
     fn scan_keyboards(tx: &mpsc::Sender<DaemonEvent>, grabbed: &Arc<Mutex<HashSet<PathBuf>>>) -> usize {
         let mut new = 0;
+        let mut seen = HashSet::new();
+        let mut listing = Vec::new();
         for (path, dev) in find_keyboards() {
+            let id = dev_id(&dev);
+            // QMK boards expose several event nodes with the same identity —
+            // collapse them into one entry for the UI.
+            if seen.insert(id.id.clone()) {
+                listing.push((id.name.clone(), id.id.clone()));
+            }
             if !grabbed.lock().unwrap().insert(path.clone()) {
                 continue; // already grabbed
             }
             grab_and_spawn(path, dev, tx.clone(), grabbed.clone());
             new += 1;
         }
+        // Runs at startup and on every hotplug, so the published list stays
+        // current when a board is replugged or reflashed.
+        write_devices(&listing);
         new
     }
 
@@ -839,21 +940,34 @@ mod linux {
         dev_watcher.watch(std::path::Path::new("/dev/input"), RecursiveMode::NonRecursive)?;
         println!("Watching /dev/input for keyboard hotplug.");
 
-        // --- Watch config file ---
+        // --- Watch the config *directory*, not the file ---
+        //
+        // A browser saving through the File System Access API writes to a swap
+        // file and renames it into place, which replaces the inode. A watch on
+        // the file itself would follow the old inode and go silent after the
+        // first save, so watch the directory and filter for the name.
         let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
         let mut watcher = notify::RecommendedWatcher::new(
             move |res: Result<notify::Event, _>| {
-                if res.is_ok() { let _ = cfg_tx.blocking_send(()); }
+                if let Ok(ev) = res {
+                    if ev.paths.iter().any(|p| p.file_name() == Some("config.yaml".as_ref())) {
+                        let _ = cfg_tx.blocking_send(());
+                    }
+                }
             },
             NotifyConfig::default(),
         )?;
-        watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
+        let watch_dir = config_path.parent().unwrap_or(&config_path).to_path_buf();
+        watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
         println!("Watching config: {}", config_path.display());
 
         let mut last_layer = String::from("base");
+        write_state(&last_layer);
+        let mut heartbeat = tokio::time::interval(HEARTBEAT);
 
         loop {
             tokio::select! {
+                _ = heartbeat.tick() => write_state(&last_layer),
                 Some(event) = rx.recv() => {
                     let (to_inject, layer_name) = state.lock().unwrap().handle(event, &tx);
                     if layer_name != last_layer {
@@ -947,20 +1061,31 @@ mod windows {
             });
         });
 
+        // Watch the directory rather than the file: a browser saving through
+        // the File System Access API renames a swap file into place, replacing
+        // the inode a file watch would be holding. See the Linux backend.
         let (cfg_tx, mut cfg_rx) = mpsc::channel::<()>(4);
         let mut watcher = notify::RecommendedWatcher::new(
             move |res: Result<notify::Event, _>| {
-                if res.is_ok() { let _ = cfg_tx.blocking_send(()); }
+                if let Ok(ev) = res {
+                    if ev.paths.iter().any(|p| p.file_name() == Some("config.yaml".as_ref())) {
+                        let _ = cfg_tx.blocking_send(());
+                    }
+                }
             },
             NotifyConfig::default(),
         )?;
-        watcher.watch(&config_path, RecursiveMode::NonRecursive)?;
+        let watch_dir = config_path.parent().unwrap_or(&config_path).to_path_buf();
+        watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
         println!("Watching config: {}", config_path.display());
 
         let mut last_layer = String::from("base");
+        write_state(&last_layer);
+        let mut heartbeat = tokio::time::interval(HEARTBEAT);
 
         loop {
             tokio::select! {
+                _ = heartbeat.tick() => write_state(&last_layer),
                 Some(event) = rx.recv() => {
                     let (to_inject, layer_name) = state.lock().unwrap().handle(event, &tx);
                     if layer_name != last_layer {
@@ -1055,6 +1180,8 @@ mod tests {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    migrate_legacy();
+
     let config_path = config_path();
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
