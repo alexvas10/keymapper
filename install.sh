@@ -5,88 +5,76 @@ cd "$(dirname "$0")"
 
 echo "=== KeyMapper Install ==="
 
-# Check dependencies
 if ! command -v cargo &>/dev/null; then
     echo "Error: cargo not found. Install Rust from https://rustup.rs"
     exit 1
-fi
-if ! command -v npm &>/dev/null; then
-    echo "Error: npm not found. Install Node.js from https://nodejs.org"
-    exit 1
-fi
-if ! cargo tauri --version &>/dev/null 2>&1; then
-    echo "Installing tauri-cli..."
-    cargo install tauri-cli --version "^2"
-fi
-
-# Install frontend dependencies if needed
-if [ ! -d gui/node_modules ]; then
-    echo "Installing frontend dependencies..."
-    (cd gui && npm install)
 fi
 
 echo "Building daemon..."
 cargo build --release -p daemon
 
-echo "Building GUI frontend..."
-(cd gui && npm run build)
-
-echo "Building GUI (with bundled frontend)..."
-cargo build --release -p keymapper-gui --features keymapper-gui/custom-protocol
-
-# Install binaries
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
-
 cp target/release/keymapper-daemon "$BIN_DIR/keymapper-daemon"
-cp target/release/keymapper-gui    "$BIN_DIR/keymapper-gui"
-chmod +x "$BIN_DIR/keymapper-daemon" "$BIN_DIR/keymapper-gui"
+chmod +x "$BIN_DIR/keymapper-daemon"
+echo "Installed daemon to $BIN_DIR"
 
-# Restart the daemon if it's running so the new binary takes effect immediately
-if systemctl --user is-active --quiet keymapper 2>/dev/null; then
-    echo "Restarting daemon with new binary..."
-    systemctl --user restart keymapper
-fi
-
-# Create launcher wrapper that activates input/uinput groups from /etc/group
-# without requiring a re-login after groupadd.
-cat > "$BIN_DIR/keymapper-daemon-launcher" <<LAUNCHER
+# The daemon needs the 'input' and 'uinput' groups. `setup_linux.sh` adds you
+# to them, but a login shell started before that will not have them yet, so the
+# service is launched through `sg` to pick them up without a re-login.
+#
+# `sg` is not present on every distribution (Arch, notably, ships only
+# `newgrp`). Where it is missing, and where the groups are already active, the
+# daemon is run directly — the wrapper exists only to work around a stale
+# session, so falling back to a direct exec is correct rather than a compromise.
+LAUNCHER="$BIN_DIR/keymapper-daemon-launcher"
+if command -v sg &>/dev/null && ! (id -nG | grep -qw input && id -nG | grep -qw uinput); then
+    cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/bin/bash
 exec sg input -c "sg uinput -c 'exec $BIN_DIR/keymapper-daemon'"
-LAUNCHER
-chmod +x "$BIN_DIR/keymapper-daemon-launcher"
-echo "Installed binaries to $BIN_DIR"
+LAUNCHER_EOF
+else
+    cat > "$LAUNCHER" <<LAUNCHER_EOF
+#!/bin/bash
+exec "$BIN_DIR/keymapper-daemon"
+LAUNCHER_EOF
+fi
+chmod +x "$LAUNCHER"
 
-# Install icon
-ICON_DIR="$HOME/.local/share/icons/hicolor/128x128/apps"
-mkdir -p "$ICON_DIR"
-cp gui/src-tauri/icons/128x128.png "$ICON_DIR/keymapper.png"
+# systemd user service
+SERVICE_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SERVICE_DIR"
+cat > "$SERVICE_DIR/keymapper.service" <<EOF
+[Unit]
+Description=KeyMapper Daemon
+After=graphical-session.target
 
-# Install .desktop file (makes app appear in launcher)
-DESKTOP_DIR="$HOME/.local/share/applications"
-mkdir -p "$DESKTOP_DIR"
+[Service]
+ExecStart=$LAUNCHER
+Restart=always
+RestartSec=3
 
-cat > "$DESKTOP_DIR/keymapper.desktop" <<EOF
-[Desktop Entry]
-Name=KeyMapper
-Comment=Kernel-level key remapper
-Exec=$BIN_DIR/keymapper-gui
-Icon=keymapper
-Type=Application
-Categories=Utility;Settings;
-StartupNotify=true
+[Install]
+WantedBy=default.target
 EOF
+systemctl --user daemon-reload
 
-# Refresh launcher database
-update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+if systemctl --user is-active --quiet keymapper 2>/dev/null; then
+    echo "Restarting daemon with the new binary..."
+    systemctl --user restart keymapper
+fi
 
 echo ""
 echo "=== Install complete ==="
 echo ""
-echo "KeyMapper is now in your application launcher."
-echo "On first launch, click 'Install Daemon' to set up the background service."
+echo "Start the daemon, now and at every login:"
+echo "  systemctl --user enable --now keymapper"
+echo ""
+echo "Then edit your mappings in the browser. Your config lives in ~/KeyMapper —"
+echo "the daemon creates it on first run, and moves an older ~/.config/keymapper"
+echo "config there for you."
 echo ""
 echo "To uninstall:"
-echo "  rm $BIN_DIR/keymapper-{gui,daemon}"
-echo "  rm $DESKTOP_DIR/keymapper.desktop"
-echo "  rm $ICON_DIR/keymapper.png"
+echo "  systemctl --user disable --now keymapper"
+echo "  rm $BIN_DIR/keymapper-daemon $LAUNCHER"
+echo "  rm $SERVICE_DIR/keymapper.service"

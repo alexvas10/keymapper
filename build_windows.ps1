@@ -15,7 +15,8 @@
 
 [CmdletBinding()]
 param(
-    # Build only the daemon; skip the Tauri GUI and its npm dependencies.
+    # Accepted and ignored. The editor is a website now, so the daemon is the
+    # only thing this builds; the switch stays so existing commands still work.
     [switch]$DaemonOnly,
 
     # Embed uiAccess="true" so the daemon can remap inside elevated windows.
@@ -58,28 +59,6 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "cargo not found. Install Rust from https://rustup.rs"
 }
 
-if (-not $DaemonOnly) {
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        throw "npm not found. Install Node.js from https://nodejs.org"
-    }
-
-    if (-not (Get-Command cargo-tauri -ErrorAction SilentlyContinue)) {
-        Write-Host "Installing tauri-cli..." -ForegroundColor Yellow
-        cargo install tauri-cli --version "^2"
-        if ($LASTEXITCODE -ne 0) { throw "Failed to install tauri-cli." }
-    }
-
-    if (-not (Test-Path 'gui\node_modules')) {
-        Write-Host "Installing frontend dependencies..." -ForegroundColor Yellow
-        Push-Location gui
-        try {
-            npm install
-            if ($LASTEXITCODE -ne 0) { throw "npm install failed." }
-        }
-        finally { Pop-Location }
-    }
-}
-
 # --- Build ------------------------------------------------------------------
 if ($UiAccess) {
     $env:KEYMAPPER_UIACCESS = '1'
@@ -89,12 +68,7 @@ else {
     $env:KEYMAPPER_UIACCESS = '0'
 }
 
-if ($DaemonOnly) {
-    $cargoArgs = 'cargo build --release -p daemon'
-}
-else {
-    $cargoArgs = 'cargo build --release'
-}
+$cargoArgs = 'cargo build --release -p daemon'
 
 Write-Host ""
 Write-Host "Building in release mode..."
@@ -108,11 +82,8 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 Write-Host ""
 Write-Host "=== Build complete ===" -ForegroundColor Green
 Write-Host ""
-Write-Host "Binaries:"
+Write-Host "Binary:"
 Write-Host "  target\release\keymapper-daemon.exe"
-if (-not $DaemonOnly) {
-    Write-Host "  target\release\keymapper-gui.exe"
-}
 Write-Host ""
 Write-Host "To install KeyMapper (autostart at logon):"
 Write-Host "  .\setup_windows.ps1"

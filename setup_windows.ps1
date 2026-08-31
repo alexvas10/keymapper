@@ -62,7 +62,7 @@ if ($Uninstall) {
     }
 
     Write-Host ""
-    Write-Host "Uninstalled. Your config in $env:APPDATA\keymapper was left untouched." -ForegroundColor Green
+    Write-Host "Uninstalled. Your config in $env:USERPROFILE\KeyMapper was left untouched." -ForegroundColor Green
     return
 }
 
@@ -132,7 +132,7 @@ if (-not $NoStart) {
 
 Write-Host ""
 Write-Host "Setup complete!"
-Write-Host "  Config:    $env:APPDATA\keymapper\config.yaml"
+Write-Host "  Config:    $env:USERPROFILE\KeyMapper\config.yaml"
 Write-Host "  Uninstall: .\setup_windows.ps1 -Uninstall"
 Write-Host ""
 Write-Host "NOTE: remapping does not apply inside elevated windows (Task Manager, UAC"
