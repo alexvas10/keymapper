@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "daemon",
-    "gui/src-tauri",
     "shared",
 ]
 resolver = "2"

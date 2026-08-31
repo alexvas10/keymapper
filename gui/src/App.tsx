@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { Keyboard, Save, RefreshCw, Plus, Trash2, Play, Square, AlertCircle, X, LayoutGrid, List, Settings, ChevronLeft, ChevronRight, GraduationCap } from 'lucide-react';
+import { Keyboard, Save, RefreshCw, Plus, Trash2, AlertCircle, X, LayoutGrid, List, Settings, ChevronLeft, ChevronRight, GraduationCap, FolderOpen, Terminal, Copy, Check, Upload, Download } from 'lucide-react';
+import * as api from './api';
+import type { Backend } from './api';
+import { ConfigError, commandMappings, type CommandUse } from './config-io';
 import type {
   AppSettings, Config, DaemonStatus, KbDevice, KbSize, Layer, Mapping,
   MacroAction, MacroStep, Profile, SocdMode, SocdPair, Target,
@@ -719,8 +721,6 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
   const [size, setSize] = useState('tkl');
   const [style, setStyle] = useState('ansi');
   const [layout, setLayout] = useState('qwerty');
-  const [daemonAuto, setDaemonAuto] = useState(true);
-  const [guiAuto, setGuiAuto] = useState(false);
   const [applying, setApplying] = useState(false);
 
   const STEPS = ['Standard', 'Key layout', 'Keyboard size', 'Startup'];
@@ -728,10 +728,6 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
 
   async function finish() {
     setApplying(true);
-    try {
-      await invoke('set_daemon_autostart', { enabled: daemonAuto });
-      await invoke('set_gui_autostart', { enabled: guiAuto });
-    } catch (_) {}
     onComplete({ first_launch: false, keyboard_size: size, keyboard_style: style, keyboard_layout: layout, auto_save_on_start: false });
     setApplying(false);
   }
@@ -853,27 +849,18 @@ function FirstLaunchWizard({ onComplete }: WizardProps) {
 
           {step === 3 && (
             <div className="space-y-3">
-              <p className="text-sm text-zinc-400 mb-4">Should KeyMapper start automatically when you log in?</p>
-              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${daemonAuto ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}
-                onClick={() => setDaemonAuto(a => !a)}>
-                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 shrink-0 ${daemonAuto ? 'border-orange-500 bg-orange-500' : 'border-zinc-600'}`}>
-                  {daemonAuto && <span className="text-white text-xs font-bold">✓</span>}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold">Start daemon on login <span className="text-xs font-normal text-orange-400">(recommended)</span></p>
-                  <p className="text-xs text-zinc-400 mt-0.5">Keeps your remappings active even when the KeyMapper window is closed.</p>
-                </div>
-              </label>
-              <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${guiAuto ? 'border-orange-500/70 bg-orange-500/[0.08] shadow-[0_0_16px_rgba(249,115,22,0.12)]' : 'border-white/[0.08] hover:border-white/25'}`}
-                onClick={() => setGuiAuto(a => !a)}>
-                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5 shrink-0 ${guiAuto ? 'border-orange-500 bg-orange-500' : 'border-zinc-600'}`}>
-                  {guiAuto && <span className="text-white text-xs font-bold">✓</span>}
-                </div>
-                <div>
-                  <p className="text-sm font-semibold">Start KeyMapper on login</p>
-                  <p className="text-xs text-zinc-400 mt-0.5">Opens the KeyMapper window automatically when you log in.</p>
-                </div>
-              </label>
+              <p className="text-sm text-zinc-400">
+                This editor runs in your browser; the remapping is done by a small daemon on your
+                computer. Once it is running you can close this tab and your keys keep working.
+              </p>
+              <p className="text-sm text-zinc-400">
+                Run this once to start it now and at every login:
+              </p>
+              <CopyableCommand cmd="systemctl --user enable --now keymapper" />
+              <p className="text-xs text-zinc-500 leading-relaxed pt-1">
+                A web page cannot start a background service itself, so this is the one step that
+                belongs in a terminal. Everything after it happens here.
+              </p>
             </div>
           )}
         </div>
@@ -909,29 +896,11 @@ interface SettingsPanelProps {
   settings: AppSettings;
   onSettingsChange: (s: Partial<AppSettings>) => void;
   onClose: () => void;
+  onDisconnect: () => void;
+  backendKind: Backend['kind'];
 }
 
-function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelProps) {
-  const [daemonAuto, setDaemonAuto] = useState(false);
-  const [guiAuto, setGuiAuto] = useState(false);
-  const [autoLoaded, setAutoLoaded] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      invoke<boolean>('get_daemon_autostart'),
-      invoke<boolean>('get_gui_autostart'),
-    ]).then(([d, g]) => { setDaemonAuto(d); setGuiAuto(g); setAutoLoaded(true); });
-  }, []);
-
-  async function toggleDaemon(v: boolean) {
-    setDaemonAuto(v);
-    try { await invoke('set_daemon_autostart', { enabled: v }); } catch (_) { setDaemonAuto(!v); }
-  }
-  async function toggleGui(v: boolean) {
-    setGuiAuto(v);
-    try { await invoke('set_gui_autostart', { enabled: v }); } catch (_) { setGuiAuto(!v); }
-  }
-
+function SettingsPanel({ settings, onSettingsChange, onClose, onDisconnect, backendKind }: SettingsPanelProps) {
   function ToggleRow({ label, desc, value, onChange, disabled }: { label: string; desc: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
     return (
       <label className={`flex items-start justify-between gap-4 p-3 rounded-xl border transition-colors cursor-pointer ${value ? 'border-orange-500/50 bg-orange-500/[0.06]' : 'border-white/[0.07] hover:border-white/15'} ${disabled ? 'opacity-40 pointer-events-none' : ''}`}
@@ -1017,25 +986,36 @@ function SettingsPanel({ settings, onSettingsChange, onClose }: SettingsPanelPro
 
           <div className="border-t border-white/[0.06]" />
 
-          {/* Startup */}
+          {/* Startup — a web page cannot enable a login service, so it hands
+              over the commands that do. */}
           <div>
             <SectionTitle>Startup</SectionTitle>
+            <p className="text-xs text-zinc-500 mb-2 leading-relaxed">
+              Run the daemon at every login, so your remappings are there before you open anything.
+            </p>
             <div className="space-y-2">
-              <ToggleRow
-                label="Start daemon on login"
-                desc="Keeps remappings active without opening this window."
-                value={daemonAuto}
-                onChange={toggleDaemon}
-                disabled={!autoLoaded}
-              />
-              <ToggleRow
-                label="Start KeyMapper on login"
-                desc="Opens this window automatically when you log in."
-                value={guiAuto}
-                onChange={toggleGui}
-                disabled={!autoLoaded}
-              />
+              <CopyableCommand cmd="systemctl --user enable --now keymapper" />
+              <CopyableCommand cmd="systemctl --user disable keymapper" />
             </div>
+          </div>
+
+          <div className="border-t border-white/[0.06]" />
+
+          {/* Where the config comes from */}
+          <div>
+            <SectionTitle>{backendKind === 'directory' ? 'Config folder' : 'Config file'}</SectionTitle>
+            <p className="text-xs text-zinc-500 mb-2 leading-relaxed">
+              {backendKind === 'directory'
+                ? <>This page reads and writes <code className="text-zinc-400">{api.CONFIG_FILE}</code> in
+                   the folder you granted. Forgetting it does not delete anything — you will just be
+                   asked to pick it again.</>
+                : <>This page is working on an uploaded copy of <code className="text-zinc-400">{api.CONFIG_FILE}</code>.
+                   Starting over lets you open a different one — download anything you want to keep first.</>}
+            </p>
+            <button onClick={onDisconnect}
+              className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors underline underline-offset-2">
+              {backendKind === 'directory' ? 'Forget this folder' : 'Open a different config'}
+            </button>
           </div>
 
           <div className="border-t border-white/[0.06]" />
@@ -1095,16 +1075,244 @@ const LAYOUT_KEYS = new Set([
   'Minus','Equal','BackQuote',
 ]);
 
+// ---------------------------------------------------------------------------
+// Talking to the machine
+//
+// The editor runs in a browser and the daemon runs on the computer; they meet
+// only through the files in the KeyMapper folder. Everything in this section
+// covers the seam — granting the folder, and the few things a website cannot
+// do for you (installing a service, starting one) where instructions are the
+// honest answer.
+// ---------------------------------------------------------------------------
+
+function CopyableCommand({ cmd }: { cmd: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-2 bg-black/40 border border-white/[0.07] rounded-lg px-3 py-2 font-mono text-xs">
+      <Terminal size={13} className="text-zinc-600 shrink-0" />
+      <code className="flex-1 text-zinc-300 overflow-x-auto whitespace-pre">{cmd}</code>
+      <button
+        onClick={() => { navigator.clipboard.writeText(cmd); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+        title="Copy" className="shrink-0 p-1 text-zinc-500 hover:text-zinc-200 transition-colors">
+        {copied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+      </button>
+    </div>
+  );
+}
+
+/// Shown until we have somewhere to read and write.
+///
+/// Two ways in. Chromium browsers can be given the folder itself, which makes
+/// saving instant. Everywhere else the config is uploaded and downloaded by
+/// hand — slower, but it reaches the same file, and the daemon cannot tell the
+/// difference.
+function ConnectScreen({
+  onConnect, onUseFiles, onDropFiles, onSkipToPractice, error,
+}: {
+  onConnect: () => void;
+  onUseFiles: () => void;
+  onDropFiles: (files: FileList) => void;
+  onSkipToPractice: () => void;
+  error: string | null;
+}) {
+  const supported = api.supportsDirectAccess();
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="flex-1 flex items-center justify-center p-8">
+      <div className="w-[560px] bg-[#141418] border border-white/10 rounded-2xl p-8 shadow-2xl">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shadow-[0_0_20px_rgba(249,115,22,0.4),inset_0_1px_0_rgba(255,255,255,0.3)]">
+            <Keyboard className="text-white" size={21} />
+          </div>
+          <h2 className="text-xl font-bold tracking-tight">
+            {supported ? 'Open your KeyMapper folder' : 'Open your config'}
+          </h2>
+        </div>
+
+        {supported && (
+          <>
+            <p className="text-sm text-zinc-400 leading-relaxed">
+              Your mappings live in a file on your computer, and the daemon watches it. Grant this
+              page access to the <strong className="text-zinc-200">{FOLDER_NAME}</strong> folder in
+              your home directory and every change you save applies straight away.
+            </p>
+            <button onClick={onConnect}
+              className="mt-5 w-full btn-primary text-white px-4 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-2">
+              <FolderOpen size={15} /> Choose folder
+            </button>
+            {error && <p className="text-xs text-red-400 mt-3">{error}</p>}
+            <div className="flex items-center gap-3 my-5">
+              <div className="flex-1 h-px bg-white/[0.07]" />
+              <span className="text-xs text-zinc-600">or</span>
+              <div className="flex-1 h-px bg-white/[0.07]" />
+            </div>
+          </>
+        )}
+
+        {!supported && (
+          <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+            This browser cannot hand a page a folder to write to — only Chromium browsers implement
+            that. Upload your <code className="text-zinc-300">{api.CONFIG_FILE}</code> instead, edit
+            it here, and download it back when you are done.
+          </p>
+        )}
+
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); onDropFiles(e.dataTransfer.files); }}
+          onClick={() => fileInput.current?.click()}
+          className={`rounded-xl border border-dashed px-4 py-6 text-center cursor-pointer transition-colors ${dragging ? 'border-orange-500 bg-orange-500/[0.06]' : 'border-white/15 hover:border-white/30'}`}>
+          <Upload className="mx-auto mb-2 text-zinc-500" size={18} />
+          <p className="text-sm text-zinc-300">Drop {api.CONFIG_FILE} here, or click to choose</p>
+          <p className="text-xs text-zinc-500 mt-1">
+            From <code>{FOLDER_NAME}</code> in your home folder. You can add{' '}
+            <code>devices.json</code> too, to fill in the keyboard list.
+          </p>
+          <input ref={fileInput} type="file" multiple hidden
+            accept=".yaml,.yml,.json"
+            onChange={e => { if (e.target.files) onDropFiles(e.target.files); }} />
+        </div>
+
+        <button onClick={onUseFiles}
+          className="mt-3 w-full text-xs text-zinc-500 hover:text-zinc-300 transition-colors underline underline-offset-2">
+          Start from a blank config instead
+        </button>
+
+        {/* The typing trainer needs no config and no daemon — it can drill the
+            board exactly as its keycaps are printed. Someone who came only to
+            practise should not have to set up a remapper first. */}
+        <div className="mt-6 pt-5 border-t border-white/[0.06]">
+          <button onClick={onSkipToPractice}
+            className="w-full flex items-center gap-3 p-3 rounded-xl border border-white/[0.08] hover:border-white/25 transition-colors text-left group">
+            <GraduationCap size={18} className="text-zinc-500 group-hover:text-orange-400 transition-colors shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Just practise typing</p>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Skip the setup. Drills your keyboard as its keycaps read — no config, no daemon.
+              </p>
+            </div>
+          </button>
+        </div>
+
+        <div className="mt-5 pt-5 border-t border-white/[0.06]">
+          <p className="text-xs text-zinc-500 mb-2">
+            No config yet? Install the daemon and run it once — it creates one for you.
+          </p>
+          <DaemonSetupSteps />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// The commands the Tauri app used to run for you. A page in a browser cannot
+/// install a service or start a process, so it hands them over instead.
+function DaemonSetupSteps() {
+  return (
+    <div className="space-y-2">
+      <CopyableCommand cmd="cargo build --release -p daemon" />
+      <CopyableCommand cmd="systemctl --user enable --now keymapper" />
+    </div>
+  );
+}
+
+function DaemonHelp({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-[#141418] border border-white/10 rounded-2xl w-[520px] shadow-2xl animate-pop-in"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-5 border-b border-white/[0.06]">
+          <h3 className="font-semibold">Running the daemon</h3>
+          <button onClick={onClose} className="p-1 text-zinc-500 hover:text-zinc-200"><X size={16} /></button>
+        </div>
+        <div className="p-5 space-y-5 text-sm">
+          <p className="text-zinc-400 leading-relaxed">
+            The daemon does the remapping and runs independently of this page — once it is going you
+            can close the browser and your keys keep working.
+          </p>
+          <div>
+            <p className="text-xs font-medium text-zinc-300 mb-2">Start it, and at every login</p>
+            <CopyableCommand cmd="systemctl --user enable --now keymapper" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-zinc-300 mb-2">Stop it</p>
+            <CopyableCommand cmd="systemctl --user stop keymapper" />
+          </div>
+          <div>
+            <p className="text-xs font-medium text-zinc-300 mb-2">Don't start it at login</p>
+            <CopyableCommand cmd="systemctl --user disable keymapper" />
+          </div>
+          <p className="text-xs text-zinc-500 leading-relaxed">
+            Saving in this editor never needs a restart — the daemon watches the config file and
+            picks changes up as you make them.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// Configs can run shell commands, so an imported one is somebody else's
+/// script. This is the gate in front of saving it.
+function CommandWarning({ uses, onAccept, onCancel }: { uses: CommandUse[]; onAccept: () => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center">
+      <div className="bg-[#141418] border border-red-500/30 rounded-2xl w-[560px] shadow-2xl animate-pop-in">
+        <div className="flex items-center gap-3 p-5 border-b border-white/[0.06]">
+          <AlertCircle className="text-red-400 shrink-0" size={18} />
+          <h3 className="font-semibold">This config runs shell commands</h3>
+        </div>
+        <div className="p-5 space-y-4 text-sm">
+          <p className="text-zinc-400 leading-relaxed">
+            The daemon executes these with your account's full permissions whenever the key is
+            pressed. Only continue if you trust where this config came from.
+          </p>
+          <div className="space-y-2 max-h-52 overflow-y-auto">
+            {uses.map((u, i) => (
+              <div key={i} className="bg-black/40 border border-white/[0.07] rounded-lg px-3 py-2">
+                <p className="text-xs text-zinc-500">{u.profile} · {u.layer} · {dk(u.from)}</p>
+                <code className="text-xs text-red-300 font-mono break-all">{u.cmd}</code>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <button onClick={onCancel}
+              className="px-4 py-2 rounded-lg text-sm text-zinc-300 hover:bg-white/[0.07] transition-colors">Cancel</button>
+            <button onClick={onAccept}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/90 hover:bg-red-500 text-white transition-colors">
+              I trust this, save it
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const FOLDER_NAME = 'KeyMapper';
+
 export default function App() {
+  const [backend, setBackend] = useState<Backend | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(true);
+  const [showDaemonHelp, setShowDaemonHelp] = useState(false);
+  /// Came in through "just practise typing", so the config is a throwaway and
+  /// the trainer defaults to drilling the physical keycaps.
+  const [practiceOnly, setPracticeOnly] = useState(false);
+  const [pendingCommands, setPendingCommands] = useState<{ uses: CommandUse[]; config: Config } | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
-  const [saveBeforeStart, setSaveBeforeStart] = useState(false);
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>('loading');
-  const [daemonInstalled, setDaemonInstalled] = useState(false);
-  const [setupMsg, setSetupMsg] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [daemonLayer, setDaemonLayer] = useState('base');
+  const [configError, setConfigError] = useState<string | null>(null);
+  /// Set once the user has vouched for this config's shell commands, so the
+  /// warning is a gate on importing someone else's rather than a nag on every save.
+  const [trustedCommands, setTrustedCommands] = useState(false);
   const [view, setView] = useState<'mappings' | 'layout' | 'practice'>('mappings');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -1127,22 +1335,115 @@ export default function App() {
   const [newProfileName, setNewProfileName] = useState('');
   const [devices, setDevices] = useState<KbDevice[]>([]);
 
+  // Reconnect to a folder granted on an earlier visit. Chromium remembers the
+  // grant, so the common case is that this succeeds and no picker is shown.
   useEffect(() => {
-    invoke<KbDevice[]>('list_keyboards').then(setDevices).catch(() => setDevices([]));
+    api.restore()
+      .then(setBackend)
+      .catch(() => setBackend(null))
+      .finally(() => setConnecting(false));
   }, []);
+
+  const connect = useCallback(async () => {
+    setConnectError(null);
+    try {
+      // A previously granted folder whose permission has lapsed can be
+      // reclaimed without making the user find it again.
+      const b = (await api.reauthorize()) ?? (await api.connect());
+      if (b) setBackend(b);
+    } catch (e) {
+      setConnectError(String(e instanceof Error ? e.message : e));
+    }
+  }, []);
+
+  /// Take on files the user dropped or picked. Recognised by name, because
+  /// that is how they sit in the KeyMapper folder — anything else is ignored
+  /// rather than guessed at.
+  const takeFiles = useCallback(async (files: FileList) => {
+    setConnectError(null);
+    let next = backend ?? api.useFiles();
+    let matched = false;
+    for (const file of Array.from(files)) {
+      const name = file.name === 'config.yml' ? api.CONFIG_FILE : file.name;
+      if (!['config.yaml', 'devices.json', 'state.json', 'typing_stats.json'].includes(name)) continue;
+      next = api.addFile(next, name, await file.text());
+      matched = true;
+    }
+    if (!matched) {
+      setConnectError(`Expected ${api.CONFIG_FILE} — that file was not recognised.`);
+      return;
+    }
+    setBackend(next);
+  }, [backend]);
+
+  const startBlank = useCallback(async () => {
+    setBackend(await api.seedConfig(api.useFiles(), api.defaultConfig()));
+  }, []);
+
+  /// Straight to the typing trainer. It needs a profile to describe a layout,
+  /// but not a real one — in Raw mode it drills the board as its keycaps are
+  /// printed, which is exactly what someone who skipped the setup wants. The
+  /// wizard is marked done so nothing stands between the click and typing.
+  const startPractice = useCallback(async () => {
+    const cfg = api.defaultConfig();
+    cfg.settings.first_launch = false;
+    setPracticeOnly(true);
+    setView('practice');
+    setBackend(await api.seedConfig(api.useFiles(), cfg, { persistDraft: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!backend) { setDevices([]); return; }
+    api.listKeyboards(backend).then(setDevices).catch(() => setDevices([]));
+  }, [backend]);
 
   const checkDaemon = useCallback(async () => {
-    const [installed, status] = await Promise.all([invoke<boolean>('is_daemon_installed'), invoke<string>('get_daemon_status')]);
-    setDaemonInstalled(installed);
-    setDaemonStatus(!installed ? 'not-installed' : status === 'active' ? 'active' : (status === 'inactive' || status === 'failed') ? 'inactive' : 'unknown');
-  }, []);
+    if (!backend) { setDaemonStatus('unknown'); return; }
+    try {
+      const state = await api.getDaemonState(backend);
+      setDaemonStatus(state.status);
+      setDaemonLayer(state.layer);
+    } catch {
+      setDaemonStatus('unknown');
+    }
+  }, [backend]);
 
   const loadConfig = useCallback(async () => {
-    try { setLoading(true); setConfig(await invoke<Config>('get_config')); setProfileIdx(0); setLayerIdx(0); setIsDirty(false); }
-    catch { setConfig(null); } finally { setLoading(false); }
-  }, []);
+    if (!backend) return;
+    setLoading(true);
+    setConfigError(null);
+    // Trusting one config's shell commands says nothing about the next one's.
+    setTrustedCommands(false);
+    try {
+      setConfig(await api.getConfig(backend));
+      setProfileIdx(0);
+      setLayerIdx(0);
+      setIsDirty(false);
+    } catch (e) {
+      // A config the daemon would refuse should be reported precisely rather
+      // than shown as a blank editor — ConfigError carries the offending path.
+      setConfig(null);
+      setConfigError(e instanceof ConfigError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [backend]);
 
-  useEffect(() => { loadConfig(); checkDaemon(); const t = setInterval(checkDaemon, 5000); return () => clearInterval(t); }, [loadConfig, checkDaemon]);
+  useEffect(() => {
+    if (!backend) return;
+    loadConfig();
+    checkDaemon();
+  }, [backend, loadConfig, checkDaemon]);
+
+  // The daemon republishes state.json on a heartbeat; poll it faster while the
+  // layout view is showing live layer changes, and slowly the rest of the time
+  // just to keep the status dot honest.
+  useEffect(() => {
+    if (!backend) return;
+    const period = view === 'layout' && daemonStatus === 'active' ? 250 : 3000;
+    const id = setInterval(checkDaemon, period);
+    return () => clearInterval(id);
+  }, [backend, view, daemonStatus, checkDaemon]);
 
   useEffect(() => {
     if (view !== 'layout' || daemonStatus !== 'active') {
@@ -1152,37 +1453,50 @@ export default function App() {
       }
       return;
     }
-    let lastIdx: number | null = null;
-    const tick = async () => {
-      try {
-        const name = await invoke<string>('get_active_layer');
-        const prof = configRef.current?.profiles[profileIdxRef.current];
-        if (!prof) return;
-        const i = (name && name !== 'base') ? prof.layers.findIndex(l => l.name === name) : -1;
-        const newIdx = i >= 0 ? i : null;
-        if (newIdx !== lastIdx) {
-          lastIdx = newIdx;
-          setLiveLayerIdx(newIdx);
-          setLayerIdx(newIdx !== null ? newIdx : manualLayerRef.current);
-        }
-      } catch { /* daemon not available */ }
-    };
-    const id = setInterval(tick, 150);
-    return () => clearInterval(id);
-  }, [view, daemonStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+    const prof = configRef.current?.profiles[profileIdxRef.current];
+    if (!prof) return;
+    const i = daemonLayer && daemonLayer !== 'base' ? prof.layers.findIndex(l => l.name === daemonLayer) : -1;
+    const newIdx = i >= 0 ? i : null;
+    if (newIdx !== liveLayerIdxRef.current) {
+      setLiveLayerIdx(newIdx);
+      setLayerIdx(newIdx !== null ? newIdx : manualLayerRef.current);
+    }
+  }, [view, daemonStatus, daemonLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const saveConfig = async () => {
-    if (!config) return;
+  // On the upload path an unsaved edit exists nowhere but this tab, so keep a
+  // draft current. Debounced, because it runs on every keystroke in a modal.
+  useEffect(() => {
+    if (!config || backend?.kind !== 'files') return;
+    const id = setTimeout(() => { api.saveDraft(config).catch(() => {}); }, 500);
+    return () => clearTimeout(id);
+  }, [config, backend]);
+
+  /// The single path from the editor to disk. The daemon is watching the file,
+  /// so there is nothing to restart and no reload to trigger — writing *is*
+  /// applying, and that is exactly why the shell-command gate lives here
+  /// rather than on the Save button. Switching profile and finishing the
+  /// wizard both write too, and neither may be a way around it.
+  const writeConfig = useCallback(async (c: Config, force = false) => {
+    if (!backend) return;
+    if (!force && !trustedCommands) {
+      const uses = commandMappings(c);
+      if (uses.length > 0) { setPendingCommands({ uses, config: c }); return; }
+    }
     setSaving(true);
     try {
-      await invoke('save_config', { config });
+      await api.saveConfig(backend, c);
+      setConfig(c);
       setIsDirty(false);
       setSavedToken(t => t + 1);
-      if (daemonInstalled && daemonStatus === 'active') {
-        try { await invoke('reload_daemon'); } catch (_) { /* daemon restart failed; file watcher will pick it up */ }
-        await checkDaemon();
-      }
-    } catch (e) { alert('Save failed: ' + e); } finally { setSaving(false); }
+    } catch (e) {
+      alert('Save failed: ' + e);
+    } finally {
+      setSaving(false);
+    }
+  }, [backend, trustedCommands]);
+
+  const saveConfig = async () => {
+    if (config) await writeConfig(config);
   };
 
   function mutate(fn: (c: Config) => void) {
@@ -1195,48 +1509,31 @@ export default function App() {
   }
 
   function handleWizardComplete(s: AppSettings) {
-    mutate(c => { c.settings = s; });
-    // Auto-save after wizard so first_launch=false persists even if user closes without saving
-    setConfig(c => {
-      if (!c) return c;
-      const n = JSON.parse(JSON.stringify(c)) as Config;
-      n.settings = s;
-      invoke('save_config', { config: n }).catch(() => {});
-      return n;
-    });
-    setIsDirty(false);
-  }
-
-  async function startDaemon() {
-    setBusy(true);
-    try { await invoke('start_daemon'); await checkDaemon(); } finally { setBusy(false); }
+    // On a granted folder, save immediately so first_launch=false sticks even
+    // if the tab is closed without a further save. On the upload path that
+    // would mean a download the moment the wizard closes, which is not what
+    // finishing a wizard should do — the draft in IndexedDB covers the reload
+    // case there instead.
+    const toFiles = backend?.kind === 'files';
+    if (!config) return;
+    const n: Config = { ...config, settings: s };
+    setConfig(n);
+    setIsDirty(toFiles);
+    if (!toFiles) writeConfig(n).catch(() => {});
   }
 
   async function setActiveProfile(name: string) {
-    if (!config) return;
+    if (!config || !backend) return;
     const updated: Config = { ...config, active_profile: name };
-    try {
-      await invoke('save_config', { config: updated });
+    // Writing to a granted folder is invisible, so do it immediately. On the
+    // upload path it would fire off a download from a dropdown change, so mark
+    // it dirty and let the user choose when to take the file.
+    if (backend.kind === 'files') {
       setConfig(updated);
-      setIsDirty(false);
-      if (daemonInstalled && daemonStatus === 'active') {
-        try { await invoke('reload_daemon'); } catch (_) {}
-        await checkDaemon();
-      }
-    } catch (e) { alert('Failed to set active profile: ' + e); }
-  }
-
-  async function handleStart() {
-    if (!config) return;
-    if (isDirty) {
-      if (config.settings.auto_save_on_start) {
-        await saveConfig();
-      } else {
-        setSaveBeforeStart(true);
-        return;
-      }
+      setIsDirty(true);
+      return;
     }
-    await startDaemon();
+    await writeConfig(updated);
   }
 
   const profile = config?.profiles[profileIdx];
@@ -1351,6 +1648,29 @@ export default function App() {
     setMappingModal({ mapping: existingIdx >= 0 ? layer.mappings[existingIdx] : null, mappingIdx: existingIdx >= 0 ? existingIdx : null, prefill: from, availableLayers });
   }
 
+  // Nothing can be shown until we have a folder to read: the config, the
+  // device list and the daemon's status all come out of it.
+  if (connecting) {
+    return (
+      <div className="app-bg flex h-screen items-center justify-center text-zinc-500 font-sans">
+        Loading…
+      </div>
+    );
+  }
+  if (!backend) {
+    return (
+      <div className="app-bg flex h-screen flex-col text-zinc-100 font-sans select-none">
+        <ConnectScreen
+          onConnect={connect}
+          onUseFiles={startBlank}
+          onDropFiles={takeFiles}
+          onSkipToPractice={startPractice}
+          error={connectError}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app-bg flex h-screen flex-col text-zinc-100 font-sans select-none">
       {/* Header */}
@@ -1378,46 +1698,86 @@ export default function App() {
             </button>
           </div>
 
-          <StatusDot status={daemonStatus} />
-          {daemonInstalled && daemonStatus === 'inactive' && (
-            <button onClick={handleStart}
-              disabled={busy} className={`flex items-center gap-1 text-sm disabled:opacity-50 ${isDirty ? 'text-orange-400 hover:text-orange-300' : 'text-green-400 hover:text-green-300'}`}>
-              <Play size={13} /> Start{isDirty ? '*' : ''}
-            </button>
-          )}
-          {daemonInstalled && daemonStatus === 'active' && (
-            <button onClick={async () => { setBusy(true); try { await invoke('stop_daemon'); await checkDaemon(); } finally { setBusy(false); } }}
-              disabled={busy} className="flex items-center gap-1 text-sm text-zinc-400 hover:text-zinc-300 disabled:opacity-50"><Square size={13} /> Stop</button>
-          )}
-          <button onClick={loadConfig} title="Refresh" className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] rounded-lg transition-colors"><RefreshCw size={16} /></button>
+          {/* The daemon's own lifecycle belongs to the machine, not to this
+              page — the status is read from its heartbeat, and the button
+              hands over the commands to change it. */}
+          <button onClick={() => setShowDaemonHelp(true)}
+            title={daemonStatus === 'unknown'
+              ? 'Upload state.json to see whether the daemon is running'
+              : daemonStatus === 'active' ? 'Daemon running' : 'Daemon not running'}
+            className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
+            <StatusDot status={daemonStatus} />
+            {daemonStatus === 'active' ? 'Running'
+              : daemonStatus === 'loading' ? ''
+              // Without live files we genuinely do not know, and saying
+              // "Not running" would be a guess presented as a fact.
+              : daemonStatus === 'unknown' ? 'Daemon'
+              : 'Not running'}
+          </button>
+          <button onClick={loadConfig} title="Reload from disk" className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] rounded-lg transition-colors"><RefreshCw size={16} /></button>
           <button onClick={() => setShowSettings(true)} title="Settings" className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] rounded-lg transition-colors"><Settings size={16} /></button>
+          {/* On the upload path there is no folder to write to, so saving
+              means handing the file back. Label it for what it does. */}
           <button onClick={saveConfig} disabled={!config || saving}
+            title={backend.kind === 'files' ? `Download ${api.CONFIG_FILE} to put in your ${FOLDER_NAME} folder` : undefined}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${isDirty ? 'btn-primary text-white ring-1 ring-orange-300/70' : 'btn-primary text-white'}`}>
-            <Save size={14} /> {saving ? 'Saving…' : isDirty ? 'Save*' : 'Save'}
+            {backend.kind === 'files' ? <Download size={14} /> : <Save size={14} />}
+            {saving ? 'Saving…' : backend.kind === 'files' ? (isDirty ? 'Download*' : 'Download') : (isDirty ? 'Save*' : 'Save')}
           </button>
         </div>
       </header>
 
-      {/* Daemon banner */}
-      {!daemonInstalled && (
+      {/* The upload path cannot see the daemon or write to it, so it says
+          plainly what the extra step is instead of pretending otherwise. */}
+      {backend.kind === 'files' && (
+        <div className="flex items-start gap-3 bg-white/[0.03] border-b border-white/[0.07] px-5 py-2.5 shrink-0">
+          <Download className="text-zinc-500 mt-0.5 shrink-0" size={14} />
+          <p className="text-xs text-zinc-400 flex-1 leading-relaxed">
+            This browser cannot write to your folder, so <strong className="text-zinc-200">Download</strong>{' '}
+            saves <code className="text-zinc-300">{api.CONFIG_FILE}</code> and you move it into{' '}
+            <code className="text-zinc-300">{FOLDER_NAME}</code> in your home folder. The daemon
+            applies it the moment it lands — no restart.
+          </p>
+        </div>
+      )}
+
+      {/* Daemon banner. "Not installed" here means the daemon has never run in
+          this folder — it publishes state.json on startup, so its absence is
+          the signal. */}
+      {daemonStatus === 'not-installed' && (
         <div className="flex items-start gap-3 bg-orange-500/[0.05] border-b border-orange-500/20 px-5 py-3 shrink-0">
           <AlertCircle className="text-orange-500 mt-0.5 shrink-0" size={15} />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium">Daemon not installed</p>
-            <p className="text-zinc-400 text-xs mt-0.5">The daemon intercepts key events system-wide. Install it once to get started.</p>
-            {setupMsg && <p className={`text-xs mt-1 ${setupMsg.startsWith('Daemon') ? 'text-green-400' : 'text-red-400'}`}>{setupMsg}</p>}
+            <p className="text-sm font-medium">The daemon has not run yet</p>
+            <p className="text-zinc-400 text-xs mt-0.5">
+              You can build your mappings here regardless — they take effect the moment it starts.
+            </p>
           </div>
-          <button onClick={async () => { setBusy(true); setSetupMsg(''); try { setSetupMsg(await invoke<string>('setup_daemon')); await checkDaemon(); await loadConfig(); } catch (e: any) { setSetupMsg(String(e)); } finally { setBusy(false); } }}
-            disabled={busy} className="shrink-0 btn-primary text-white disabled:opacity-50 px-3 py-1.5 rounded-lg text-xs font-medium">
-            {busy ? 'Installing…' : 'Install Daemon'}
+          <button onClick={() => setShowDaemonHelp(true)}
+            className="shrink-0 btn-primary text-white px-3 py-1.5 rounded-lg text-xs font-medium">
+            How to start it
           </button>
         </div>
       )}
 
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-zinc-500">Loading…</div>
+      ) : configError ? (
+        <div className="flex-1 flex items-center justify-center p-8">
+          <div className="max-w-lg text-center">
+            <AlertCircle className="text-red-400 mx-auto mb-3" size={22} />
+            <p className="text-sm font-medium mb-1">This config file cannot be read</p>
+            <p className="text-xs text-zinc-500 font-mono break-words">{configError}</p>
+            <p className="text-xs text-zinc-500 mt-3">
+              Fix it by hand, or start over — the daemon writes a fresh {api.CONFIG_FILE} if you
+              remove the broken one.
+            </p>
+          </div>
+        </div>
       ) : !config ? (
-        <div className="flex-1 flex items-center justify-center text-zinc-500">No config found. Install the daemon to create one.</div>
+        <div className="flex-1 flex items-center justify-center text-zinc-500">
+          No {api.CONFIG_FILE} in this folder yet — start the daemon once and it will create one.
+        </div>
       ) : (
         <div className="flex-1 overflow-hidden flex flex-col">
           {/* Profile tabs */}
@@ -1493,6 +1853,8 @@ export default function App() {
               {/* Main view */}
               {view === 'practice' ? (
                 <TypingView
+                  backend={backend}
+                  initialMode={practiceOnly ? 'raw' : 'auto'}
                   profile={profile}
                   layerIdx={layerIdx}
                   settings={config.settings}
@@ -1603,26 +1965,18 @@ export default function App() {
       )}
       {socdModal !== null && <SocdModal initial={socdModal.pair} onSave={p => saveSocd(p, socdModal.idx)} onClose={() => setSocdModal(null)} />}
       {layerModal !== null && <LayerModal initial={layerModal.layer} onSave={(n, t) => saveLayer(n, t, layerModal.idx)} onClose={() => setLayerModal(null)} />}
-      {saveBeforeStart && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center animate-fade-in" onClick={() => setSaveBeforeStart(false)}>
-          <div className="bg-[#141418] border border-white/10 rounded-2xl animate-pop-in w-[380px] shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-white/[0.06]">
-              <h3 className="font-semibold">Unsaved changes</h3>
-              <button onClick={() => setSaveBeforeStart(false)}><X size={18} className="text-zinc-400 hover:text-zinc-100" /></button>
-            </div>
-            <div className="p-4">
-              <p className="text-sm text-zinc-300">You have unsaved changes. Save them before starting the daemon so your remappings take effect?</p>
-            </div>
-            <div className="flex justify-end gap-2 p-4 border-t border-white/[0.06]">
-              <button onClick={() => setSaveBeforeStart(false)}
-                className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
-              <button onClick={async () => { setSaveBeforeStart(false); await startDaemon(); }}
-                className="px-4 py-2 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 border border-white/[0.1] hover:border-white/25 transition-colors">Start anyway</button>
-              <button onClick={async () => { setSaveBeforeStart(false); await saveConfig(); await startDaemon(); }}
-                className="px-4 py-2 rounded-lg text-sm font-medium btn-primary text-white transition-colors">Save & Start</button>
-            </div>
-          </div>
-        </div>
+      {showDaemonHelp && <DaemonHelp onClose={() => setShowDaemonHelp(false)} />}
+      {pendingCommands && (
+        <CommandWarning
+          uses={pendingCommands.uses}
+          onCancel={() => setPendingCommands(null)}
+          onAccept={async () => {
+            const { config: pending } = pendingCommands;
+            setPendingCommands(null);
+            setTrustedCommands(true);
+            await writeConfig(pending, true);
+          }}
+        />
       )}
       {config?.settings.first_launch && <FirstLaunchWizard onComplete={handleWizardComplete} />}
       {showSettings && config && (
@@ -1630,6 +1984,14 @@ export default function App() {
           settings={config.settings}
           onSettingsChange={mutateSettings}
           onClose={() => setShowSettings(false)}
+          backendKind={backend.kind}
+          onDisconnect={async () => {
+            await api.disconnect();
+            setBackend(null);
+            setConfig(null);
+            setPracticeOnly(false);
+            setShowSettings(false);
+          }}
         />
       )}
     </div>
